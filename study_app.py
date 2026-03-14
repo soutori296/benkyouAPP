@@ -232,7 +232,7 @@ else:
             st.write(f"残り {total_q - st.session_state.index} 問")
             main_p, hint_p = parse_q_display(q['q']); st.subheader(main_p)
             if hint_p: st.info(f"💡 {hint_p}")
-            canvas_res = st_canvas(stroke_width=9, height=250, width=830, key=f"c_{st.session_state.index}")
+            canvas_res = st_canvas(stroke_width=9, height=250, width=800, key=f"c_{st.session_state.index}")
             c1, c2 = st.columns(2)
             with c1:
                 if not st.session_state.show_options:
