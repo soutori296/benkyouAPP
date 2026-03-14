@@ -10,7 +10,6 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 QUESTIONS_FILE = os.path.join(BASE_DIR, "questions.json")
 STATS_FILE = os.path.join(BASE_DIR, "study_stats.json")
 
-# スプレッドシート連携の初期化
 def get_gsheet_client():
     if "gcp_service_account" in st.secrets:
         try:
@@ -21,41 +20,49 @@ def get_gsheet_client():
             st.error(f"認証エラー: {e}")
     return None
 
+# ★ 改良：統計データの読み込みと科目別集計
 def load_all_stats():
     client = get_gsheet_client()
     if client:
         try:
             sh = client.open("study_stats_db").sheet1
             data = sh.get_all_records()
-            history = {row['q']: {"correct": int(row['correct']), "wrong": int(row['wrong']), 
-                                  "rank": row['rank'], "subject": row['subject']} for row in data}
-            # 特訓日数などの基本データは別管理か、JSONと併用
-            return {"history": history, "streak": 0, "last_date": ""}
-        except: return {"history": {}, "streak": 0, "last_date": ""}
+            # もしデータが空（ヘッダーのみ等）の場合は初期化
+            if not data:
+                # 1行目にヘッダーを書き込み
+                if not sh.cell(1, 1).value:
+                    sh.insert_row(["q", "correct", "wrong", "rank", "subject"], 1)
+                return {"history": {}, "streak": 0}
+            
+            history = {row['q']: {"correct": int(row['correct'] or 0), "wrong": int(row['wrong'] or 0), 
+                                  "rank": row.get('rank', 'A'), "subject": row.get('subject', '不明')} for row in data}
+            return {"history": history}
+        except: return {"history": {}}
     
+    # ローカル用
     if os.path.exists(STATS_FILE):
         with open(STATS_FILE, "r", encoding="utf-8") as f: return json.load(f)
-    return {"history": {}, "streak": 0, "last_date": ""}
+    return {"history": {}}
 
-def save_stat(q_text, is_correct, rank, subject, is_weak_mode=False):
-    now = datetime.now(); today = now.strftime("%Y-%m-%d")
+def save_stat(q_text, is_correct, rank, subject):
     client = get_gsheet_client()
-    
     if client:
         try:
             sh = client.open("study_stats_db").sheet1
+            # 既存の行を探す
             cell = sh.find(q_text)
             if cell:
                 row = cell.row
+                # 指定の列を更新（2列目:正解数, 3列目:ミス数）
                 c_val = int(sh.cell(row, 2).value or 0) + (1 if is_correct else 0)
                 w_val = int(sh.cell(row, 3).value or 0) + (0 if is_correct else 1)
                 sh.update_cell(row, 2, c_val)
                 sh.update_cell(row, 3, w_val)
             else:
                 sh.append_row([q_text, 1 if is_correct else 0, 0 if is_correct else 1, rank, subject])
-        except Exception as e: st.sidebar.error(f"保存エラー: {e}")
+        except: pass
     else:
-        # ローカル保存
+        # ローカル用
         data = load_all_stats()
         if q_text not in data["history"]: data["history"][q_text] = {"correct": 0, "wrong": 0, "rank": rank, "subject": subject}
         if is_correct: data["history"][q_text]["correct"] += 1
@@ -74,12 +81,10 @@ def setup_audio_engine():
 def parse_q_display(text):
     match = re.search(r'\s+([ぁ-んァ-ヶ一-龠].*)$', text)
     if match:
-        main_part = text[:match.start()].strip()
-        sub_part = match.group(1).strip()
-        if main_part: return main_part, sub_part
+        main_p = text[:match.start()].strip(); hint_p = match.group(1).strip()
+        if main_p: return main_p, hint_p
     return text, ""
 
-# セッション初期化
 for k, v in {"user_ans_list": [], "show_options": False, "show_result": False, 
              "last_is_correct": False, "score": 0, "index": 0, "session_streak": 0}.items():
     if k not in st.session_state: st.session_state[k] = v
@@ -87,11 +92,28 @@ for k, v in {"user_ans_list": [], "show_options": False, "show_result": False,
 st.set_page_config(page_title="70点マスター", layout="centered")
 setup_audio_engine()
 
-# --- 2. サイドバー ---
+# --- 2. サイドバー（統計表示復活） ---
 with st.sidebar:
+    st.info("📊 スプレッドシート同期中")
     stats_data = load_all_stats()
-    st.info(f"📊 スプレッドシート同期中")
+    hist = stats_data.get("history", {})
+    
+    if hist:
+        # 科目ごとの集計
+        subjects = set(v.get("subject", "不明") for v in hist.values())
+        for sub in sorted(subjects):
+            sub_qs = [v for v in hist.values() if v.get("subject") == sub]
+            total_tries = sum(v["correct"] + v["wrong"] for v in sub_qs)
+            total_correct = sum(v["correct"] for v in sub_qs)
+            rate = int(total_correct / total_tries * 100) if total_tries > 0 else 0
+            
+            st.write(f"**{sub}**: {rate}点 ({total_tries}回回答)")
+            st.progress(rate / 100)
+    else:
+        st.write("まだ記録がありません。特訓を開始しましょう！")
+
     if 'mode' in st.session_state:
+        st.divider()
         st.success(f"⚔️ **{st.session_state.session_streak}** 連勝中！")
         if st.button("🔴 中止"): st.session_state.clear(); st.rerun()
 
