@@ -146,7 +146,7 @@ def parse_q_display(text):
     return text, ""
 
 # セッション初期化
-for k, v in {"user_ans_list": [], "show_options": False, "show_result": False, "index": 0, "session_streak": 0, "session_max_streak": 0, "pending_results": []}.items():
+for k, v in {"user_ans_list": [], "show_options": False, "show_result": False, "index": 0, "session_streak": 0, "session_max_streak": 0, "pending_results": [], "p_edit_q_obj": None}.items():
     if k not in st.session_state: st.session_state[k] = v
 
 st.set_page_config(page_title="高校受験対策", layout="wide")
@@ -168,13 +168,12 @@ with st.sidebar:
         st.warning(f"👑 歴代最高: {max(rec, st.session_state.session_max_streak)}")
     
     st.divider()
-    # --- 保護者メニュー（最速検索エディタ Ver.178） ---
+    # --- 保護者メニュー（Ver.180：最短UI版） ---
     with st.expander("👨‍👩‍👧 保護者メニュー"):
         p_mode = st.checkbox("保護者モードを有効にする")
         if p_mode:
             p_tabs = st.tabs(["📈 統計", "🛠️ 問題修正"])
             with p_tabs[0]:
-                st.write("### 学習状況一覧")
                 df = pd.DataFrame(stats_res["raw_data"])
                 if not df.empty:
                     df['correct'] = pd.to_numeric(df['correct'], errors='coerce').fillna(0)
@@ -186,53 +185,50 @@ with st.sidebar:
             with p_tabs[1]:
                 all_q_edit = load_questions_from_gsheet()
                 if all_q_edit:
-                    # ★ 改良：今の問題を即座に修正リストの先頭へ
+                    # 1. 今の問題を即セット
                     if 'mode' in st.session_state and st.session_state.index < len(st.session_state.questions):
                         cur_q = st.session_state.questions[st.session_state.index]
                         if st.button(f"📢 今の問題を修正：{cur_q['q'][:10]}...", use_container_width=True):
-                            st.session_state["p_edit_q"] = cur_q['q']
-                            st.session_state["p_edit_cat"] = st.session_state.mode
+                            st.session_state["p_edit_q_obj"] = {"cat": st.session_state.mode, "q": cur_q['q'], "a": cur_q['a']}
                             st.rerun()
                     
                     st.write("---")
-                    # 教科選択を廃止し、検索欄に一本化
-                    search_txt = st.text_input("🔍 修正したい問題を検索（全教科対象）", placeholder="キーワードを入力してください")
+                    # 2. 検索欄
+                    search_txt = st.text_input("🔍 問題を検索（クリックで修正対象を選択）", placeholder="キーワードを入力")
                     
-                    # 全データのフラット化
-                    flat_list = []
-                    for cat, items in all_q_edit.items():
-                        for item in items:
-                            flat_list.append({"cat": cat, "q": item['q'], "a": item['a']})
-
-                    # ★ アンマッチ防止ロジック：今の問題を最優先に
                     if search_txt:
-                        filtered = [f for f in flat_list if search_txt.lower() in f['q'].lower()]
-                    elif "p_edit_q" in st.session_state:
-                        target_q = st.session_state["p_edit_q"]
-                        target_cat = st.session_state["p_edit_cat"]
-                        match = [f for f in flat_list if f['q'] == target_q and f['cat'] == target_cat]
-                        others = [f for f in flat_list if not (f['q'] == target_q and f['cat'] == target_cat)]
-                        filtered = match + others[:30] # 一致分を1番目にして、残りは予備として表示
-                    else:
-                        filtered = flat_list[:50] # 何もなければ先頭50件
+                        flat_list = []
+                        for cat, items in all_q_edit.items():
+                            for item in items:
+                                if search_txt.lower() in item['q'].lower():
+                                    flat_list.append({"cat": cat, "q": item['q'], "a": item['a']})
+                        
+                        if flat_list:
+                            st.caption("検索結果（クリックしてセット）:")
+                            for i, f in enumerate(flat_list[:10]): # 上位10件をボタン表示
+                                if st.button(f"[{f['cat']}] {f['q'][:20]}...", key=f"src_{i}", use_container_width=True):
+                                    st.session_state["p_edit_q_obj"] = f
+                                    st.rerun()
+                        else: st.info("見つかりません。")
 
-                    if filtered:
-                        q_options = [f"[{f['cat']}] {f['q']}" for f in filtered]
-                        # 常に1番目(index=0)を選択状態にする（検索や今の問題セットが効くため）
-                        selected_label = st.selectbox("修正対象（検索結果）", q_options, index=0)
-                        
-                        target = filtered[q_options.index(selected_label)]
-                        st.caption(f"教科: {target['cat']}")
-                        new_q = st.text_input("問題文 (修正)", value=target['q'])
-                        new_a = st.text_input("正解 (修正)", value=target['a'])
-                        
-                        if st.button("✅ 修正を保存", use_container_width=True):
-                            if update_question_in_gsheet(target['cat'], target['q'], new_q, new_a):
-                                st.success("保存完了！")
-                                st.cache_data.clear()
-                                if "p_edit_q" in st.session_state: del st.session_state["p_edit_q"]
-                                time.sleep(1); st.rerun()
-                    else: st.info("一致する問題が見つかりません。")
+                    st.write("---")
+                    # 3. 修正フォーム（値がある時だけ表示、ないなら空白）
+                    target = st.session_state["p_edit_q_obj"]
+                    val_q = target['q'] if target else ""
+                    val_a = target['a'] if target else ""
+                    
+                    if target: st.caption(f"対象教科: {target['cat']}")
+                    new_q = st.text_input("問題文 (修正)", value=val_q)
+                    new_a = st.text_input("正解 (修正)", value=val_a)
+                    
+                    if st.button("✅ 修正内容を保存", use_container_width=True):
+                        if target and update_question_in_gsheet(target['cat'], target['q'], new_q, new_a):
+                            st.success("保存完了！")
+                            st.cache_data.clear()
+                            st.session_state["p_edit_q_obj"] = None
+                            time.sleep(1); st.rerun()
+                        elif not target:
+                            st.error("修正する問題を選択してください。")
 
     st.divider(); st.write("<br>" * 10, unsafe_allow_html=True)
 
@@ -285,7 +281,7 @@ else:
             if st.session_state.show_result:
                 if st.session_state.last_is_correct:
                     st.success(f"## ✨ 正解！ : {q['a']}")
-                    if st.button("次へ ➡️", use_container_width=True, type="primary"):
+                    if st.button("次へ進む ➡️", use_container_width=True, type="primary"):
                         st.session_state.index += 1; st.session_state.show_result = False; st.session_state.show_options = False; st.session_state.user_ans_list = []; st.rerun()
                 else:
                     st.error(f"## ❌ ざんねん！ 正解は {q['a']}")
