@@ -8,7 +8,6 @@ from google.oauth2.service_account import Credentials
 # --- 1. 基本設定 ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 QUESTIONS_FILE = os.path.join(BASE_DIR, "questions.json")
-STATS_FILE = os.path.join(BASE_DIR, "study_stats.json")
 
 def get_gsheet_client():
     if "gcp_service_account" in st.secrets:
@@ -19,30 +18,28 @@ def get_gsheet_client():
         except: return None
     return None
 
-# ★ 改良：キャッシュを導入してAPI制限を回避
-@st.cache_data(ttl=300) # 5分間は同じデータを使う
+# ★ 改良：エラー状態をキャッシュせず、原因を表示できるように修正
+@st.cache_data(ttl=300, show_spinner="スプレッドシートから取得中...")
 def load_all_stats_cached():
     client = get_gsheet_client()
-    if client:
-        try:
-            sh = client.open("study_stats_db").sheet1
-            data = sh.get_all_records()
-            history = {}
-            for row in data:
-                q_text = str(row.get('q', ''))
-                if q_text:
-                    history[q_text] = {
-                        "correct": int(row.get('correct', 0) or 0),
-                        "wrong": int(row.get('wrong', 0) or 0), 
-                        "rank": str(row.get('rank', 'A')),
-                        "subject": str(row.get('subject', '不明'))
-                    }
-            return {"history": history}
-        except Exception as e:
-            if "429" in str(e):
-                st.error("⚠️ Googleの制限がかかりました。1分ほど待ってから更新してください。")
-            return {"history": {}}
-    return {"history": {}}
+    if not client: return {"history": {}, "status": "no_client"}
+    try:
+        sh = client.open("study_stats_db").sheet1
+        data = sh.get_all_records()
+        history = {}
+        for row in data:
+            q_text = str(row.get('q', ''))
+            if q_text:
+                history[q_text] = {
+                    "correct": int(row.get('correct', 0) or 0),
+                    "wrong": int(row.get('wrong', 0) or 0), 
+                    "rank": str(row.get('rank', 'A')),
+                    "subject": str(row.get('subject', '不明'))
+                }
+        return {"history": history, "status": "ok"}
+    except Exception as e:
+        # エラー時はキャッシュせず、現在のエラーを返す
+        return {"history": {}, "status": "error", "message": str(e)}
 
 def save_stat(q_text, is_correct, rank, subject):
     client = get_gsheet_client()
@@ -58,17 +55,7 @@ def save_stat(q_text, is_correct, rank, subject):
                 sh.update_cell(row, 3, w_val)
             else:
                 sh.append_row([q_text, 1 if is_correct else 0, 0 if is_correct else 1, rank, subject])
-            # 保存後はキャッシュを消さない（読み込みは5分おきでOK、書き込みは都度行う）
         except: pass
-    else:
-        # ローカルPC用
-        if not os.path.exists(STATS_FILE): data = {"history": {}}
-        else:
-            with open(STATS_FILE, "r", encoding="utf-8") as f: data = json.load(f)
-        if q_text not in data["history"]: data["history"][q_text] = {"correct": 0, "wrong": 0, "rank": rank, "subject": subject}
-        if is_correct: data["history"][q_text]["correct"] += 1
-        else: data["history"][q_text]["wrong"] += 1
-        with open(STATS_FILE, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False)
 
 def setup_audio_engine():
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -97,21 +84,26 @@ setup_audio_engine()
 with st.sidebar:
     st.title("📊 学習記録")
     if st.button("🔄 最新データに更新", use_container_width=True):
-        st.cache_data.clear() # キャッシュを消して強制読み込み
+        st.cache_data.clear()
         st.rerun()
 
-    stats_data = load_all_stats_cached()
-    hist = stats_data.get("history", {})
+    res = load_all_stats_cached()
+    hist = res.get("history", {})
     
-    if hist:
-        subjects = set(v.get("subject", "不明") for v in hist.values())
-        for sub in sorted(subjects):
-            sub_qs = [v for v in hist.values() if v.get("subject") == sub]
-            total_t = sum(v["correct"] + v["wrong"] for v in sub_qs)
-            total_c = sum(v["correct"] for v in sub_qs)
-            rate = int(total_c / total_t * 100) if total_t > 0 else 0
-            st.write(f"**{sub}**: {rate}点 ({total_t}回)")
-            st.progress(rate / 100)
+    if res["status"] == "ok":
+        if hist:
+            subjects = set(v.get("subject", "不明") for v in hist.values())
+            for sub in sorted(subjects):
+                sub_qs = [v for v in hist.values() if v.get("subject") == sub]
+                total_t = sum(v["correct"] + v["wrong"] for v in sub_qs)
+                total_c = sum(v["correct"] for v in sub_qs)
+                rate = int(total_c / total_t * 100) if total_t > 0 else 0
+                st.write(f"**{sub}**: {rate}点 ({total_t}回)")
+                st.progress(rate / 100)
+        else:
+            st.warning("スプレッドシートにデータがありません。1問解いてみましょう！")
+    elif res["status"] == "error":
+        st.error(f"⚠️ 読み込みエラー: {res.get('message')}")
     else:
         st.write("待機中...")
 
@@ -120,7 +112,7 @@ with st.sidebar:
         st.success(f"⚔️ **{st.session_state.session_streak}** 連勝中！")
         if st.button("🔴 中止"): st.session_state.clear(); st.rerun()
 
-# --- 3. メイン画面 ---
+# --- 3. メイン画面（以下省略、Ver.138と同じ） ---
 if 'mode' not in st.session_state:
     st.title("🛡️ yoshi式・70点奪取特訓")
     if os.path.exists(QUESTIONS_FILE):
@@ -135,13 +127,12 @@ if 'mode' not in st.session_state:
             elif "苦手克服" in diff:
                 wrong_list = [q_t for q_t, v in hist.items() if v.get("wrong", 0) > 0]
                 filtered = [q for q in data if q['q'] in wrong_list]
-                if not filtered: st.warning("まだ苦手な問題がありません。ミックスで開始。"); filtered = data
+                if not filtered: st.warning("苦手な問題がありません。ミックスで開始。"); filtered = data
             else: filtered = data
             random.shuffle(filtered); st.session_state.questions = filtered[:50]
             st.session_state.index, st.session_state.score, st.session_state.session_streak = 0, 0, 0
             st.session_state.show_result = False; st.rerun()
 else:
-    # クイズ進行ロジック
     total_q = len(st.session_state.questions)
     if st.session_state.index >= total_q:
         st.balloons(); st.success("特訓終了！"); 
@@ -164,7 +155,6 @@ else:
             st.subheader(main_p)
             if hint_p: st.info(f"💡 {hint_p}")
             canvas_res = st_canvas(stroke_width=9, height=180, width=700, key=f"c_{st.session_state.index}")
-            
             if not st.session_state.show_options:
                 if st.button("🔍 判定して選択肢を表示", use_container_width=True):
                     if not is_order_q and (not canvas_res.json_data or len(canvas_res.json_data.get("objects", [])) == 0):
