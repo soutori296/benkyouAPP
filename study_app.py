@@ -1,6 +1,7 @@
 import streamlit as st
 from streamlit_drawable_canvas import st_canvas
 import json, os, random, time, base64, re, io
+import pandas as pd # 統計表示用
 from datetime import datetime
 import gspread
 from google.oauth2.service_account import Credentials
@@ -31,7 +32,7 @@ def load_questions_from_gsheet():
 
 def load_all_stats_with_records():
     creds = get_creds()
-    if not creds: return {"history": {}, "streaks": {}, "last_sub": ""}
+    if not creds: return {"history": {}, "streaks": {}, "last_sub": "", "raw_data": []}
     try:
         ss = gspread.authorize(creds).open("study_stats_db")
         hist_data = ss.sheet1.get_all_records()
@@ -44,8 +45,8 @@ def load_all_stats_with_records():
                 streaks[row['key']] = row['value']
                 if row['key'] == "last_selected_subject": last_sub = str(row['value'])
         except: pass
-        return {"history": history, "streaks": streaks, "last_sub": last_sub}
-    except: return {"history": {}, "streaks": {}, "last_sub": ""}
+        return {"history": history, "streaks": streaks, "last_sub": last_sub, "raw_data": hist_data}
+    except: return {"history": {}, "streaks": {}, "last_sub": "", "raw_data": []}
 
 def save_last_subject(sub_name):
     creds = get_creds()
@@ -147,16 +148,34 @@ with st.sidebar:
     st.title("📊 学習記録")
     if st.button("🔄 最新データに更新", use_container_width=True):
         st.cache_data.clear(); st.session_state.clear(); st.rerun()
+    
     stats_res = load_all_stats_with_records()
     hist = stats_res["history"]; streaks = stats_res["streaks"]; last_sub = stats_res["last_sub"]
+    
     if 'mode' in st.session_state:
         st.success(f"🔥 今日の連勝: {st.session_state.session_streak}")
         rec = int(streaks.get(f"max_streak_{st.session_state.mode}", 0))
         st.warning(f"👑 歴代最高: {max(rec, st.session_state.session_max_streak)}")
-    st.write("**教科別の歴代記録**")
-    for k, v in streaks.items():
-        if "max_streak_" in k: st.caption(f"{k.replace('max_streak_', '')}: {v}連勝")
-    st.divider(); st.write("<br>" * 20, unsafe_allow_html=True)
+    
+    st.divider()
+    # ★ 改良：保護者モード（統計表示）
+    with st.expander("👨‍👩‍👧 保護者メニュー"):
+        if st.checkbox("保護者モードを有効にする"):
+            st.write("### 📈 全体の学習状況")
+            df = pd.DataFrame(stats_res["raw_data"])
+            if not df.empty:
+                # 数値を整数に変換し、正答率を計算
+                df['correct'] = pd.to_numeric(df['correct'], errors='coerce').fillna(0)
+                df['wrong'] = pd.to_numeric(df['wrong'], errors='coerce').fillna(0)
+                df['Total'] = df['correct'] + df['wrong']
+                df['正答率'] = (df['correct'] / df['Total'] * 100).fillna(0).round(1)
+                
+                # 集計表示
+                st.write(df[['subject', 'q', 'correct', 'wrong', '正答率']].sort_values(by='wrong', ascending=False))
+            else:
+                st.write("データがありません。")
+
+    st.divider(); st.write("<br>" * 10, unsafe_allow_html=True)
 
 # --- 3. メイン画面 ---
 if 'mode' not in st.session_state:
@@ -190,7 +209,6 @@ else:
         q = st.session_state.questions[st.session_state.index]; is_order_q = "/" in q['q']; is_math = "数学" in st.session_state.mode
         main_p, hint_p = parse_q_display(q['q'])
 
-        # ★ 修正：教科別のレイアウト定義
         if is_math:
             col_left, col_right = st.columns([1.5, 1])
             with col_left:
@@ -205,7 +223,6 @@ else:
             if hint_p: st.info(f"💡 {hint_p}")
             canvas_res = st_canvas(stroke_width=9, height=250, width=1200, key=f"c_{st.session_state.index}", background_color="#f0f2f6")
             st.write("---")
-            # 修正ポイント：st.container() を使うことで with target_col が動くように
             target_col = st.container()
 
         with target_col:
@@ -236,20 +253,20 @@ else:
                     st.write("**答えを選択：**")
                     if is_order_q:
                         words = [w.strip() for w in main_p.replace("(","").replace(")","").replace("?","").replace(".","").split("/") if w.strip()]
-                        current = st.session_state.user_ans_list; disp = [w for w in words if w not in current]
+                        current = st.session_state.user_ans_list
+                        disp = [w for w in words if w not in current]
                         
-                        # 英語は横5列、数学は縦1列
-                        if not is_math:
-                            opt_cols = st.columns(min(len(disp), 5))
+                        # ★ 改良：解答文字の巨大化
+                        if current:
+                            st.markdown(f"""<div style="background-color:#e1f5fe; padding:15px; border-radius:10px; border-left:5px solid #03a9f4; margin-bottom:20px;"><span style="color:#0277bd; font-size:2.0rem; font-weight:bold; letter-spacing:1px;">{" ".join(current)}</span></div>""", unsafe_allow_html=True)
+
+                        # ★ 改良：ボタン位置の固定（5列）
+                        if len(disp) > 0:
+                            cols = st.columns(5)
                             for i, w in enumerate(disp):
-                                if opt_cols[i % 5].button(w, key=f"w_{i}", use_container_width=True):
+                                if cols[i % 5].button(w, key=f"w_{i}_{len(current)}"):
                                     st.session_state.user_ans_list.append(w); st.rerun()
-                        else:
-                            for i, w in enumerate(disp):
-                                if st.button(w, key=f"w_{i}", use_container_width=True):
-                                    st.session_state.user_ans_list.append(w); st.rerun()
-                                    
-                        st.markdown(f"**解答:** {' '.join(current)}")
+                        
                         bc1, bc2 = st.columns(2)
                         with bc1:
                             if st.button("⬅️ 戻す", use_container_width=True):
@@ -271,7 +288,6 @@ else:
                             opts = [q['a']] + generate_clever_distractors(q['a'], st.session_state.mode, st.session_state.all_ans_in_set)
                             st.session_state.cur_opts = random.sample(list(set(opts)), len(list(set(opts)))); st.session_state.last_q_id = st.session_state.index
                         
-                        # 英語は横並び、数学は縦並び
                         if not is_math:
                             opt_cols = st.columns(len(st.session_state.cur_opts))
                             for i, opt in enumerate(st.session_state.cur_opts):
