@@ -12,57 +12,60 @@ def get_gsheet_client():
             scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
             creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
             return gspread.authorize(creds)
-        except: return None
+        except Exception as e:
+            st.error(f"認証クライアント作成エラー: {e}")
+            return None
     return None
 
+# ★ 改良：読み込みエラー時に原因を特定できるように修正
 @st.cache_data(ttl=60)
 def load_questions_from_gsheet():
     client = get_gsheet_client()
     if not client: return {}
     try:
-        sh = client.open("study_stats_db").worksheet("questions")
-        data = sh.get_all_records()
-        organized = {}
-        for row in data:
-            cat = row.get('category', '共通')
-            if "数学" in cat and "/" in str(row.get('q', '')): continue
-            if cat not in organized: organized[cat] = []
-            organized[cat].append({"rank": row.get('rank', 'A'), "q": str(row.get('q', '')), "a": str(row.get('a', '')), "h": str(row.get('h', ''))})
-        return organized
-    except: return {}
+        with st.spinner('問題データを読み込んでいます...'):
+            sh = client.open("study_stats_db").worksheet("questions")
+            data = sh.get_all_records()
+            organized = {}
+            for row in data:
+                cat = row.get('category', '共通')
+                if not cat or ("数学" in str(cat) and "/" in str(row.get('q', ''))): continue
+                if cat not in organized: organized[cat] = []
+                organized[cat].append({"rank": row.get('rank', 'A'), "q": str(row.get('q', '')), "a": str(row.get('a', '')), "h": str(row.get('h', ''))})
+            return organized
+    except Exception as e:
+        if "429" in str(e): st.error("⚠️ Googleの回数制限がかかりました。1分ほど待って更新してください。")
+        elif "WorksheetNotFound" in str(e): st.error("⚠️ 'questions' という名前のシートが見つかりません。")
+        else: st.error(f"⚠️ 問題読み込みエラー: {e}")
+        return {}
 
-# ★ 改良：成績と歴代記録を読み込む
 def load_all_stats_with_record():
     client = get_gsheet_client()
     if not client: return {"history": {}, "all_time_max": 0}
     try:
         ss = client.open("study_stats_db")
-        # 1. 成績読み込み
         hist_data = ss.sheet1.get_all_records()
         history = {str(row['q']): {"correct": int(row['correct'] or 0), "wrong": int(row['wrong'] or 0), "subject": str(row.get('subject', '不明'))} for row in hist_data if row.get('q')}
         
-        # 2. 歴代最高記録(summaryシート)読み込み
         all_time_max = 0
         try:
             sum_sh = ss.worksheet("summary")
-            val = sum_sh.cell(2, 2).value # B2セル
+            val = sum_sh.cell(2, 2).value
             all_time_max = int(val) if val else 0
         except:
-            # シートがなければ作成
-            sum_sh = ss.add_worksheet(title="summary", rows="10", cols="5")
-            sum_sh.update('A1:B2', [['key', 'value'], ['all_time_max_streak', 0]])
-            
+            try:
+                sum_sh = ss.add_worksheet(title="summary", rows="10", cols="5")
+                sum_sh.update('A1:B2', [['key', 'value'], ['all_time_max_streak', 0]])
+            except: pass
         return {"history": history, "all_time_max": all_time_max}
-    except:
-        return {"history": {}, "all_time_max": 0}
+    except: return {"history": {}, "all_time_max": 0}
 
-# ★ 改良：歴代記録を更新する
 def update_all_time_record(new_val):
     client = get_gsheet_client()
     if client:
         try:
             sh = client.open("study_stats_db").worksheet("summary")
-            sh.update_cell(2, 2, new_val) # B2セルを更新
+            sh.update_cell(2, 2, new_val)
         except: pass
 
 def update_question_in_gsheet(old_q, new_q, new_a):
@@ -118,7 +121,7 @@ setup_audio_engine()
 # --- 2. サイドバー ---
 with st.sidebar:
     st.title("📊 学習状況")
-    if st.button("🔄 データを更新", use_container_width=True):
+    if st.button("🔄 最新データに更新", use_container_width=True):
         st.cache_data.clear(); st.session_state.clear(); st.rerun()
 
     # データの読み込み
@@ -151,11 +154,12 @@ with st.sidebar:
                 if st.button("保存して反映", key=f"btn_inst_{idx}"):
                     if update_question_in_gsheet(cur_q['q'], new_q, new_a):
                         st.session_state.questions[idx]['q'] = new_q; st.session_state.questions[idx]['a'] = new_a
-                        st.cache_data.clear(); st.success("完了！"); time.sleep(0.5); st.rerun()
+                        st.cache_data.clear(); st.success("反映完了！"); time.sleep(0.5); st.rerun()
 
 # --- 3. メイン画面 ---
 if 'mode' not in st.session_state:
     st.title("🛡️ 70点奪取特訓")
+    # ★ 改良：タイトル直後のエラー処理を強化
     all_q = load_questions_from_gsheet()
     if all_q:
         sub = st.selectbox("特訓セットを選択", list(all_q.keys()))
@@ -174,7 +178,13 @@ if 'mode' not in st.session_state:
             st.session_state.all_ans_in_set = [q['a'] for q in data]
             st.session_state.index, st.session_state.score, st.session_state.session_streak = 0, 0, 0
             st.session_state.show_result = False; st.rerun()
+    else:
+        # データがない場合は具体的にどうすればいいかを表示
+        st.info("🔄 サイドバーの「最新データに更新」ボタンをもう一度押すか、スプレッドシートのシート名（questions）を確認してください。")
+        if st.button("もう一度読み込む"):
+            st.cache_data.clear(); st.rerun()
 else:
+    # クイズ進行ロジック
     total_q = len(st.session_state.questions)
     if st.session_state.index >= total_q:
         st.balloons(); st.success("特訓終了！")
@@ -208,7 +218,6 @@ else:
             if st.session_state.show_options:
                 st.divider()
                 if is_order_q:
-                    # 並べ替えロジック
                     words = [w.strip() for w in main_p.replace("(","").replace(")","").replace("?","").replace(".","").split("/") if w.strip()]
                     current = st.session_state.user_ans_list; disp = [w for w in words if w not in current]
                     if disp:
@@ -224,18 +233,13 @@ else:
                             st.session_state.last_is_correct = is_ok
                             if is_ok:
                                 st.session_state.score += 1; st.session_state.session_streak += 1
-                                # ★ 歴代記録をチェック＆更新
                                 if st.session_state.session_streak > st.session_state.all_time_max:
                                     st.session_state.all_time_max = st.session_state.session_streak
                                     update_all_time_record(st.session_state.all_time_max)
                             else: st.session_state.session_streak = 0
                             time.sleep(0.5); st.session_state.show_result = True; st.rerun()
                 else:
-                    # 選択肢ロジック
                     if 'cur_opts' not in st.session_state or st.session_state.get('last_q_id') != st.session_state.index:
-                        from random import sample
-                        dummies = [] # 巧妙なダミー生成(中身はVer.148と同じ)
-                        # (ダミー生成コード略、以下に判定部)
                         opts = [q['a']] + random.sample([a for a in st.session_state.all_ans_in_set if a != q['a']], min(3, len(st.session_state.all_ans_in_set)-1))
                         st.session_state.cur_opts = random.sample(opts, len(opts)); st.session_state.last_q_id = st.session_state.index
                     cols = st.columns(len(st.session_state.cur_opts))
@@ -247,7 +251,6 @@ else:
                             st.session_state.last_is_correct = is_ok
                             if is_ok:
                                 st.session_state.score += 1; st.session_state.session_streak += 1
-                                # ★ 歴代記録をチェック＆更新
                                 if st.session_state.session_streak > st.session_state.all_time_max:
                                     st.session_state.all_time_max = st.session_state.session_streak
                                     update_all_time_record(st.session_state.all_time_max)
