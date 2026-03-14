@@ -141,7 +141,7 @@ for k, v in {"user_ans_list": [], "show_options": False, "show_result": False, "
 st.set_page_config(page_title="高校受験対策", layout="wide")
 setup_audio_engine()
 
-# 余白削りCSS
+# CSSで上部余白を極限まで削る
 st.markdown("""<style>.block-container {padding-top: 1rem !important; padding-bottom: 0rem !important;} header {visibility: hidden;}</style>""", unsafe_allow_html=True)
 
 # --- 2. サイドバー ---
@@ -158,8 +158,8 @@ with st.sidebar:
     st.write("**教科別の歴代記録**")
     for k, v in streaks.items():
         if "max_streak_" in k: st.caption(f"{k.replace('max_streak_', '')}: {v}連勝")
-    st.divider(); st.write("<br>" * 30, unsafe_allow_html=True)
-    if st.checkbox("⚙️ メンテナンス", value=False): pass
+    st.divider(); st.write("<br>" * 25, unsafe_allow_html=True)
+    if st.checkbox("⚙️ 管理", value=False): pass
 
 # --- 3. メイン画面 ---
 if 'mode' not in st.session_state:
@@ -198,23 +198,21 @@ else:
             main_p, hint_p = parse_q_display(q['q']); st.subheader(main_p)
             if hint_p: st.info(f"💡 {hint_p}")
             
-            # ★ 改良：数学なら高さを500px、それ以外は250pxに自動調整
-            canvas_height = 500 if "数学" in st.session_state.mode else 250
-            canvas_res = st_canvas(
-                stroke_width=9, height=canvas_height, width=800, 
-                key=f"c_{st.session_state.index}", background_color="#f0f2f6"
-            )
+            canvas_h = 500 if "数学" in st.session_state.mode else 250
+            canvas_res = st_canvas(stroke_width=9, height=canvas_h, width=800, key=f"c_{st.session_state.index}", background_color="#f0f2f6")
 
         with col_right:
             st.write("---")
             if st.session_state.show_result:
+                # ★ 改良：正解バーの中に答えをドッキング表示
                 if st.session_state.last_is_correct:
-                    st.success("⭕ 正解！")
-                    if st.button("次へ進む ➡️", use_container_width=True):
+                    st.success(f"## ✨ 正解！ : {q['a']}")
+                    if st.button("次へ進む ➡️", use_container_width=True, type="primary"):
                         st.session_state.index += 1; st.session_state.show_result = False; st.session_state.show_options = False; st.session_state.user_ans_list = []; st.rerun()
                 else:
-                    st.error(f"❌ 正解は:\n\n**{q['a']}**")
-                    if st.button("次へ進む ➡️", use_container_width=True):
+                    st.error(f"## ❌ ざんねん！ 正解は {q['a']}")
+                    st.markdown(f"""<div style="background-color:#ffe9e9; padding:15px; border-radius:10px; border:2px solid #ff4b4b; text-align:center;"><span style="color:#31333f; font-weight:bold; font-size:2rem;">{q['a']}</span></div>""", unsafe_allow_html=True)
+                    if st.button("理解した！次へ ➡️", use_container_width=True):
                         st.session_state.index += 1; st.session_state.show_result = False; st.session_state.show_options = False; st.session_state.user_ans_list = []; st.rerun()
             else:
                 c1, c2 = st.columns(2)
