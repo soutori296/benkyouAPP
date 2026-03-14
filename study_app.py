@@ -1,350 +1,250 @@
 import streamlit as st
-# --- 1. st.set_page_config は必ず最初に配置 ---
+import base64
+import os
+import time
+import re
+import random
+from datetime import datetime
+import pandas as pd
+import gspread
+from google.oauth2.service_account import Credentials
+
+# --- 1. st.set_page_config ---
 st.set_page_config(
-    page_title="高校受験対策", 
+    page_title="高校受験対策 🛡️ DB即時反映・完全版", 
     layout="wide", 
     initial_sidebar_state="expanded"
 )
 
 from streamlit_drawable_canvas import st_canvas
-import json, os, random, time, base64, re, io
-import pandas as pd
-from datetime import datetime
-import gspread
-from google.oauth2.service_account import Credentials
 
-# --- 2. 基本設定・API連携 ---
+# --- 2. セッション状態の初期化 ---
+def init_session():
+    defaults = {
+        "questions": [], "index": 0, "mode": None, "diff": "ミックス",
+        "show_options": False, "show_result": False, "last_is_correct": False,
+        "user_ans_list": [], "retry_count": 0, "session_streak": 0, "correct_count": 0,
+        "all_ans_pool": [], "current_opts": [], "results_buffer": [],
+        "sound_enabled": True, "play_this": None
+    }
+    for k, v in defaults.items():
+        if k not in st.session_state: st.session_state[k] = v
+
+init_session()
+
+# --- 3. 音声予約システム ---
+def queue_sound(file_name):
+    if st.session_state.sound_enabled:
+        st.session_state.play_this = file_name
+
+def execute_queued_sound():
+    file_name = st.session_state.play_this
+    if file_name and os.path.exists(file_name):
+        with open(file_name, "rb") as f:
+            data = f.read()
+            b64 = base64.b64encode(data).decode()
+            unique_id = int(time.time() * 1000)
+            sound_html = f"""<script>/* {unique_id} */ setTimeout(function() {{ var a = new Audio("data:audio/mp3;base64,{b64}"); a.play(); }}, 800);</script>"""
+            st.components.v1.html(sound_html, height=0)
+        st.session_state.play_this = None
+
+# --- 4. 判定・解析 ---
+def compare_answers(u, c):
+    if not u or not c: return False
+    def normalize(s):
+        s = str(s).lower()
+        s = re.sub(r'[\s\u3000\t\n\r\xa0]', '', s)
+        s = re.sub(r'^[a-z]\s*=\s*', '', s)
+        s = re.sub(r'[.\?\!。？！]+$', '', s)
+        return s
+    return normalize(u) == normalize(c)
+
+def parse_order_question(text):
+    match = re.search(r'\((.*?/.*?)\)', str(text))
+    if match:
+        words = [w.strip() for w in match.group(1).split('/') if w.strip()]
+        jp = text.replace(f"({match.group(1)})", "").strip()
+        return jp, words
+    return text, []
+
+# --- 5. API・データ連携 (A:category, B:rank, C:q, D:a, E:h) ---
 def get_creds():
     if "gcp_service_account" in st.secrets:
-        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-        return Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
+        return Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"])
     return None
 
-def format_math_text(text):
-    if not isinstance(text, str): return text
-    text = text.replace('*', '×')
-    text = text.replace('^2', '²').replace('^3', '³')
-    return text
-
-def is_too_easy_math(category, q_text):
-    if "数学" not in category: return False
-    if re.search(r'[xyabπ\^²³\(\)＝=]', q_text): return False
-    if re.match(r'^\d+\s*[\+\-\*\/×÷]\s*\d+\s*=$', q_text.strip()): return True
-    return False
-
-@st.cache_data(ttl=300)
-def load_questions_from_gsheet():
+@st.cache_data(ttl=60)
+def load_db():
     creds = get_creds()
-    if not creds: return {}
+    if not creds: return {}, {"cat_stats": [], "avg": 0, "reports": [], "last_sub": ""}
     try:
-        client = gspread.authorize(creds)
-        sh = client.open("study_stats_db").worksheet("questions")
-        data = sh.get_all_records()
+        gc = gspread.authorize(creds); ss = gc.open("study_stats_db")
+        q_rows = ss.worksheet("questions").get_all_records()
         organized = {}
-        for row in data:
-            cat = str(row.get('category', '共通'))
-            q_raw = str(row.get('q', ''))
-            if is_too_easy_math(cat, q_raw) or not q_raw or not row.get('a'): continue
-            if cat not in organized: organized[cat] = []
-            organized[cat].append({
-                "rank": row.get('rank', 'A'), 
-                "q": q_raw, 
-                "a": str(row.get('a', '')), 
-                "h": str(row.get('h', '')),
-                "orig_cat": cat
-            })
-        return organized
-    except: return {}
+        for r in q_rows:
+            cat = str(r.get('category', '共通'))
+            organized.setdefault(cat, []).append({"q": str(r['q']), "a": str(r['a']), "h": str(r.get('h','')), "rank": str(r.get('rank','-')), "orig_cat": cat})
+        h_rows = ss.sheet1.get_all_records()
+        cat_agg = {}; t_c = t_a = 0
+        for r in h_rows:
+            cat = str(r.get('subject', 'その他'))
+            c, w = int(r.get('correct', 0)), int(r.get('wrong', 0))
+            cat_agg.setdefault(cat, {"c": 0, "t": 0})
+            cat_agg[cat]["c"] += c; cat_agg[cat]["t"] += (c + w); t_c += c; t_a += (c + w)
+        cat_stats = [{"教科": k, "解答数": f"{v['t']}問", "得点率": f"{int(v['c']/v['t']*100) if v['t']>0 else 0}点"} for k,v in cat_agg.items()]
+        last_sub = next((r.get('value') for r in ss.worksheet("summary").get_all_records() if r.get('key')=="last_selected_subject"), "")
+        reports = []
+        try: reports = ss.worksheet("reports").get_all_records()
+        except: pass
+        return organized, {"all_ans": [str(r['a']) for r in q_rows], "cat_stats": cat_stats, "avg": int((t_c/t_a*100)) if t_a>0 else 0, "last_sub": last_sub, "reports": reports}
+    except: return {}, {"cat_stats": [], "avg": 0}
 
-def update_question_in_gsheet(category, old_q, new_q, new_a):
-    creds = get_creds()
-    if not creds: return False
+# ★【最重要】マスターDB修正関数
+def update_db_question_master(old_cat, old_q, new_rank, new_q, new_a):
     try:
-        client = gspread.authorize(creds)
-        sh = client.open("study_stats_db").worksheet("questions")
+        sh = gspread.authorize(get_creds()).open("study_stats_db").worksheet("questions")
         records = sh.get_all_records()
         for i, row in enumerate(records):
-            if str(row.get('category')) == category and str(row.get('q')) == old_q:
-                sh.update_cell(i + 2, 2, new_q); sh.update_cell(i + 2, 3, new_a); return True
+            if str(row.get('category')) == str(old_cat) and str(row.get('q')) == str(old_q):
+                row_num = i + 2
+                sh.update_cell(row_num, 2, new_rank) # B: rank
+                sh.update_cell(row_num, 3, new_q)    # C: q
+                sh.update_cell(row_num, 4, new_a)    # D: a
+                return True
+        return False
     except: return False
 
-def load_all_stats_with_records():
-    creds = get_creds()
-    if not creds: return {"history": {}, "streaks": {}, "last_sub": "", "raw_data": []}
+def batch_save_to_db():
+    if not st.session_state.results_buffer: return
     try:
-        ss = gspread.authorize(creds).open("study_stats_db")
-        hist_raw = ss.sheet1.get_all_records()
-        hist = {str(r['q']): {"correct": int(r['correct'] or 0), "wrong": int(r['wrong'] or 0), "subject": str(r.get('subject', '不明'))} for r in hist_raw if r.get('q')}
-        streaks = {}; last_sub = ""
-        try:
-            for r in ss.worksheet("summary").get_all_records():
-                streaks[r['key']] = r['value']
-                if r['key'] == "last_selected_subject": last_sub = str(r['value'])
-        except: pass
-        return {"history": hist, "streaks": streaks, "last_sub": last_sub, "raw_data": hist_raw}
-    except: return {"history": {}, "streaks": {}, "last_sub": "", "raw_data": []}
-
-def save_last_subject(sub_name):
-    creds = get_creds()
-    if creds:
-        try:
-            sh = gspread.authorize(creds).open("study_stats_db").worksheet("summary")
-            cell = sh.find("last_selected_subject")
-            if cell: sh.update_cell(cell.row, 2, sub_name)
-            else: sh.append_row(["last_selected_subject", sub_name])
-        except: pass
-
-def sync_results_to_gsheet():
-    if not st.session_state.pending_results: return
-    creds = get_creds()
-    if not creds: return
-    try:
-        ss = gspread.authorize(creds).open("study_stats_db"); sheet = ss.sheet1; rows = sheet.get_all_records()
-        cur_data = {str(r['q']): r for r in rows}
-        for res in st.session_state.pending_results:
-            q_t = res['q']
-            if q_t in cur_data:
-                if res['is_ok']: cur_data[q_t]['correct'] = int(cur_data[q_t]['correct']) + 1
-                else:
-                    if int(cur_data[q_t]['correct']) >= 5: cur_data[q_t]['correct'] = 4
-                    cur_data[q_t]['wrong'] = int(cur_data[q_t]['wrong']) + 1
-            else: cur_data[q_t] = {'q': q_t, 'correct': 1 if res['is_ok'] else 0, 'wrong': 0 if res['is_ok'] else 1, 'rank': res['rank'], 'subject': res['subject']}
-        final = [['q', 'correct', 'wrong', 'rank', 'subject']]
-        for v in cur_data.values(): final.append([v['q'], v['correct'], v['wrong'], v['rank'], v['subject']])
-        sheet.update('A1', final)
-        
-        sum_sh = ss.worksheet("summary"); key = f"max_streak_{st.session_state.mode}"; val = st.session_state.session_max_streak; found = False
-        for i, r in enumerate(sum_sh.get_all_values()):
-            if r[0] == key:
-                if val > int(r[1] or 0): sum_sh.update_cell(i+1, 2, val)
-                found = True; break
-        if not found: sum_sh.append_row([key, val])
-        st.session_state.pending_results = []; st.cache_data.clear()
+        with st.spinner("💾 同期中..."):
+            sh = gspread.authorize(get_creds()).open("study_stats_db").sheet1
+            all_r = sh.get_all_records()
+            for res in st.session_state.results_buffer:
+                q_t, is_ok, r_v, s_v = res["q"], res["is_correct"], res.get("rank","-"), res.get("subject","共通")
+                f_row = -1
+                for i, row in enumerate(all_r):
+                    if str(row.get('q')) == str(q_t): f_row = i + 2; break
+                if f_row != -1:
+                    col = 2 if is_ok else 3
+                    curr = int(sh.cell(f_row, col).value or 0)
+                    sh.update_cell(f_row, col, curr + 1)
+                    sh.update_cell(f_row, 4, r_v); sh.update_cell(f_row, 5, s_v)
+                else: sh.append_row([str(q_t), 1 if is_ok else 0, 0 if is_ok else 1, r_v, s_v])
+            st.session_state.results_buffer = []; st.cache_data.clear(); st.toast("同期完了！")
     except: st.error("保存失敗")
 
-def generate_clever_distractors(correct_ans, mode, all_ans):
-    dists = set(); c_ans = str(correct_ans)
-    if "数学" in mode:
-        try:
-            v = float(c_ans)
-            dists.add(str(int(v+1) if v.is_integer() else v+1))
-            dists.add(str(int(v-1) if v.is_integer() else v-1))
-            dists.add(str(int(-v) if v.is_integer() else -v))
-        except:
-            if "=" in c_ans:
-                var, val = c_ans.split("=")
-                try:
-                    v = int(val.strip())
-                    dists.add(f"{var}= {v+1}"); dists.add(f"{var}= {v-1}"); dists.add(f"{var}= {-v}")
-                except: pass
-    pool = [str(a) for a in all_ans if abs(len(str(a)) - len(c_ans)) <= 5 and str(a).lower() != c_ans.lower()]
-    random.shuffle(pool)
-    for c in pool:
-        if len(dists) >= 3: break
-        dists.add(c)
-    return list(dists)[:3]
+all_q, db = load_db()
 
-def setup_audio():
-    base = os.path.dirname(os.path.abspath(__file__)); c_p, w_p = os.path.join(base, "correct.mp3"), os.path.join(base, "wrong.mp3")
-    c_b64 = base64.b64encode(open(c_p, "rb").read()).decode() if os.path.exists(c_p) else ""
-    w_b64 = base64.b64encode(open(w_p, "rb").read()).decode() if os.path.exists(w_p) else ""
-    st.components.v1.html(f"<script>window.parent.playJudge=function(isOk){{new Audio(isOk?'data:audio/mp3;base64,{c_b64}':'data:audio/mp3;base64,{w_b64}').play();}};</script>", height=0)
-
-def parse_q_display(text):
-    if re.match(r'^[A-Za-z\s\(\)\.\,\?\!]+', text):
-        m = re.search(r'\s+([ぁ-んァ-ヶ一-龠].*)$', text)
-        if m: return text[:m.start()].strip(), m.group(1).strip()
-    return text, ""
-
-# --- 3. セッション初期化 ---
-for k, v in {"user_ans_list": [], "show_options": False, "show_result": False, "index": 0, "session_streak": 0, "session_max_streak": 0, "pending_results": [], "p_edit_obj": None}.items():
-    if k not in st.session_state: st.session_state[k] = v
-
-setup_audio()
-
-# デザイン調整 (欠けを防止するために padding を 3rem に増やします)
-st.markdown("""
-    <style>
-    .block-container {padding-top: 3rem;}
-    /* ツールバーを隠すとサイドバーボタンも消えやすいため、一旦オフにします */
-    /* [data-testid="stToolbar"] {visibility: hidden;} */
-    </style>
-    """, unsafe_allow_html=True)
-
-# どの画面でも一番上にタイトルを表示
-st.title("🛡️ 高校受験対策")
-
-# --- 4. サイドバー ---
+# --- 6. サイドバー ---
 with st.sidebar:
-    st.title("📊 学習記録")
-    if st.button("🔄 最新データに更新", use_container_width=True): 
-        st.cache_data.clear()
-        for key in list(st.session_state.keys()): del st.session_state[key]
-        st.rerun()
-    
-    stats_data = load_all_stats_with_records()
-    
-    if 'mode' in st.session_state:
-        st.success(f"🔥 今日の連勝: {st.session_state.session_streak}")
-        st.warning(f"👑 歴代最高: {max(int(stats_data['streaks'].get(f'max_streak_{st.session_state.mode}', 0)), st.session_state.session_max_streak)}")
-        
-        if st.button("🏳️ 中止保存", use_container_width=True):
-            sync_results_to_gsheet()
-            for key in list(st.session_state.keys()): del st.session_state[key]
-            st.rerun()
-    
+    st.title("📊 学習成績表")
+    if st.button("🔄 最新に更新", width='stretch'): st.cache_data.clear(); st.rerun()
+    st.metric("🎓 総合平均点", f"{db.get('avg', 0)}点")
+    if db.get('cat_stats'): st.dataframe(pd.DataFrame(db['cat_stats']), width='stretch', hide_index=True)
     st.divider()
-    with st.expander("👨‍👩‍👧 保護者メニュー"):
-        if st.checkbox("保護者モードを有効にする"):
-            p_tabs = st.tabs(["📈 統計", "🛠️ 問題修正"])
-            with p_tabs[0]:
-                df = pd.DataFrame(stats_data["raw_data"])
-                if not df.empty:
-                    for c in ['correct', 'wrong']: df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
-                    df['正答率'] = (df['correct'] / (df['correct'] + df['wrong']) * 100).fillna(0).round(1)
-                    st.dataframe(df[['subject', 'q', 'correct', 'wrong', '正答率']], use_container_width=True)
-            
-            with p_tabs[1]:
-                all_q_edit = load_questions_from_gsheet()
-                src = st.text_input("🔍 問題を検索")
-                match = None
-                if src:
-                    for c, items in all_q_edit.items():
-                        for i in items:
-                            if src.lower() in i['q'].lower():
-                                match = {"cat": c, "q": i['q'], "a": i['a']}; break
-                        if match: break
-                st.session_state.p_edit_obj = match
-                target = st.session_state.p_edit_obj
-                if target:
-                    new_q = st.text_input("問題文 (修正)", value=target['q'])
-                    new_a = st.text_input("正解 (修正)", value=target['a'])
-                    if st.button("✅ 修正を保存"):
-                        if update_question_in_gsheet(target['cat'], target['q'], new_q, new_a):
-                            st.success("保存完了！"); st.cache_data.clear(); time.sleep(1); st.rerun()
+    st.session_state.sound_enabled = st.toggle("🔊 効果音", value=st.session_state.sound_enabled)
+    
+    if st.session_state.mode:
+        if st.button("🏳️ 特訓中止", width='stretch'): st.session_state.clear(); st.rerun()
+        # 報告機能
+        idx = st.session_state.index
+        if idx < len(st.session_state.questions):
+            cur = st.session_state.questions[idx]
+            with st.expander("🚨 ミス報告"):
+                m = st.text_input("内容", key="rpt_in")
+                if st.button("パパへ送信", width='stretch'):
+                    try:
+                        sh_rpt = gspread.authorize(get_creds()).open("study_stats_db").worksheet("reports")
+                        sh_rpt.append_row([datetime.now().strftime("%m/%d %H:%M"), cur['orig_cat'], cur['q'], cur['a'], m])
+                        st.toast("報告しました！")
+                    except: st.error("失敗")
 
-    st.divider(); st.write("<br>" * 10, unsafe_allow_html=True)
+    if st.session_state.results_buffer:
+        if st.button("💾 データを保存", width='stretch', type="primary"): batch_save_to_db(); st.rerun()
 
-# --- 5. メイン画面 ---
-if 'mode' not in st.session_state:
-    all_q = load_questions_from_gsheet()
-    if all_q:
-        raw_keys = list(all_q.keys())
-        special_options = ["英語 (1・2年合同)", "数学 (1・2年合同)"]
-        q_keys = special_options + raw_keys
-        
-        last_sub = stats_data['last_sub']
-        sub = st.selectbox("特訓セットを選択", q_keys, index=q_keys.index(last_sub) if last_sub in q_keys else 0)
-        diff = st.radio("モード選択", ["ミックス", "🧩 並べ替え特訓", "🔥 苦手克服"], horizontal=True)
-        
-        if st.button("特訓開始！", use_container_width=True):
-            save_last_subject(sub); st.session_state.mode = sub
-            target_cats = []
-            if "英語" in sub and "合同" in sub: target_cats = [k for k in raw_keys if "英語" in k]
-            elif "数学" in sub and "合同" in sub: target_cats = [k for k in raw_keys if "数学" in k]
-            else: target_cats = [sub]
-            
-            cat_groups = {}; total_ans_pool = []
-            for cat in target_cats:
-                data = all_q.get(cat, [])
-                total_ans_pool.extend([q['a'] for q in data])
-                f_data = [q for q in data if int(stats_data['history'].get(q['q'], {}).get('correct', 0)) < 5 or random.random() < 0.2]
-                if "数学" in cat:
-                    f_data = [q for q in f_data if not ("/" in q['q'] and " " in str(q['a']).strip())]
-                if "並べ替え" in diff:
-                    f_data = [q for q in f_data if "/" in q['q']]
-                elif "苦手克服" in diff:
-                    f_data = [q for q in f_data if stats_data['history'].get(q['q'], {}).get('wrong', 0) > 0]
-                
-                if not f_data: f_data = data
-                random.shuffle(f_data); cat_groups[cat] = f_data
-            
-            interleaved = []
-            if cat_groups:
-                max_q = max(len(v) for v in cat_groups.values())
-                for i in range(0, max_q, 3):
-                    for cat in sorted(cat_groups.keys()):
-                        chunk = cat_groups[cat][i : i+3]
-                        interleaved.extend(chunk)
-            
-            st.session_state.questions = interleaved[:80]; st.session_state.all_ans_in_set = list(set(total_ans_pool))
-            st.session_state.index = 0; st.session_state.session_streak = 0; st.session_state.session_max_streak = 0; st.session_state.pending_results = []; st.session_state.show_result = False; st.rerun()
+    for _ in range(10): st.write("")
+    st.divider()
+    if st.checkbox("👨‍👩‍👧 保護者メニュー（管理）", value=False):
+        t1, t2 = st.tabs(["🛠️ 修正", "📋 履歴"])
+        with t1:
+            if st.session_state.mode and st.session_state.index < len(st.session_state.questions):
+                cur = st.session_state.questions[st.session_state.index]
+                st.caption(f"教科: {cur['orig_cat']}")
+                nq = st.text_area("問題文修正", value=cur['q'], key="fix_q")
+                na = st.text_input("正解修正", value=cur['a'], key="fix_a")
+                nr = st.text_input("Rank修正", value=cur['rank'], key="fix_r")
+                # ★【修正完了】ここが本当のDB更新ボタン
+                if st.button("✅ DBを書き換える", width='stretch'):
+                    if update_db_question_master(cur['orig_cat'], cur['q'], nr, nq, na):
+                        st.cache_data.clear() # 記憶を消してDBから読み直し
+                        st.success("スプレッドシートを更新しました！"); time.sleep(1); st.rerun()
+                    else: st.error("更新に失敗しました")
+            else: st.info("特訓中にここを開くと修正できます")
+        with t2:
+            if db.get('reports'): st.dataframe(pd.DataFrame(db['reports']).tail(5), width='stretch', hide_index=True)
+
+# --- 7. メイン画面 ---
+if not st.session_state.mode:
+    st.title("🛡️ 高校受験対策")
+    q_keys = ["数学総合", "英語総合"] + sorted(list(all_q.keys()))
+    sub = st.selectbox("セット選択", q_keys, index=q_keys.index(db.get('last_sub')) if db.get('last_sub') in q_keys else 0)
+    diff = st.radio("モード", ["ミックス", "🧩 並べ替え特訓", "🔥 苦手克服"], horizontal=True)
+    if st.button("🚀 スタート！", width='stretch', type="primary"):
+        target = [sub]
+        if sub == "数学総合": target = [k for k in all_q.keys() if "数学" in k]
+        elif sub == "英語総合": target = [k for k in all_q.keys() if "英語" in k]
+        qs = []
+        for c in target: qs.extend(all_q.get(c, []))
+        if diff == "🧩 並べ替え特訓": qs = [x for x in qs if "/" in str(x['q'])]
+        elif diff == "🔥 苦手克服": qs = [x for x in qs if str(x['q']) in str(db.get('reports',''))] # 簡易的な苦手
+        if not qs: st.error("対象なし"); st.stop()
+        random.shuffle(qs)
+        st.session_state.questions = qs[:30]; st.session_state.all_ans_pool = db.get("all_ans", [])
+        st.session_state.mode = sub; st.session_state.index = 0; st.session_state.correct_count = 0; st.session_state.session_streak = 0; st.rerun()
 else:
-    total = len(st.session_state.questions)
-    if st.session_state.index >= total:
-        sync_results_to_gsheet(); st.balloons(); st.success("特訓終了！")
-        if st.button("TOPへ戻る"): 
-            for key in list(st.session_state.keys()): del st.session_state[key]
-            st.rerun()
+    # クイズ実行中ロジック
+    idx = st.session_state.index; qs = st.session_state.questions
+    if idx >= len(qs):
+        if st.session_state.results_buffer: batch_save_to_db()
+        st.balloons(); st.markdown(f'<div style="font-size:3rem; text-align:center;">スコア: {int((st.session_state.correct_count/len(qs))*100)}点</div>', unsafe_allow_html=True)
+        if st.button("TOPへ", width='stretch', type="primary"): st.session_state.clear(); st.rerun()
     else:
-        q = st.session_state.questions[st.session_state.index]; is_math = "数学" in q['orig_cat']
-        is_order_q = ("/" in q['q']) and (" " in str(q['a']).strip())
-        main_p, hint_p = parse_q_display(q['q']); display_q = format_math_text(main_p)
+        q = qs[idx]; jp_p, order_w = parse_order_question(q['q'])
+        st.caption(f"残り {len(qs)-idx} 問 / 30問中　🔥 {st.session_state.session_streak}連勝　Rank: {q['rank']}")
+        if order_w: st.markdown(f'### ( {" / ".join(order_w)} ) {jp_p}')
+        else: st.markdown(f'### {q["q"]}')
+        st_canvas(stroke_width=9, height=450, width=1200, key=f"cv_{idx}_{st.session_state.retry_count}", background_color="#f8f9fb", update_streamlit=False)
         
-        st.caption(f"カテゴリー: {q['orig_cat']} | 残り {total - st.session_state.index} 問")
-        
-        if is_math:
-            col_l, col_r = st.columns([1.5, 1])
-            with col_l:
-                st.markdown(f"### {display_q}", unsafe_allow_html=True)
-                if hint_p: st.info(f"💡 {hint_p}")
-                canvas_res = st_canvas(stroke_width=9, height=500, width=800, key=f"c_{st.session_state.index}", background_color="#f8f9fb")
-            target_col = col_r
+        if st.session_state.show_result:
+            if st.session_state.last_is_correct: st.success(f"✨ 正解！ : {q['a']}")
+            else: st.error(f"❌ 正解は **{q['a']}**")
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("次へ進む ➡️", width='stretch', type="primary"):
+                    st.session_state.index += 1; st.session_state.show_result = False; st.session_state.show_options = False; st.session_state.user_ans_list = []; st.session_state.current_opts = []; st.session_state.retry_count = 0; st.rerun()
+            with c2:
+                if st.button("🔄 もう一度", width='stretch'):
+                    st.session_state.retry_count += 1; st.session_state.show_result = False; st.session_state.user_ans_list = []; st.rerun()
+        elif st.session_state.show_options:
+            cor_a = str(q['a'])
+            # 択一/並べ替え判定
+            if not st.session_state.current_opts:
+                opts = [cor_a] + random.sample(db.get('all_ans', []), 3)
+                random.shuffle(opts); st.session_state.current_opts = opts
+            cols = st.columns(len(st.session_state.current_opts))
+            for i, o in enumerate(st.session_state.current_opts):
+                if cols[i].button(o, key=f"opt_{idx}_{i}", width='stretch'):
+                    ok = compare_answers(o, cor_a)
+                    queue_sound("correct.mp3" if ok else "wrong.mp3")
+                    st.session_state.results_buffer.append({"q":q['q'], "is_correct":ok, "rank":q['rank'], "subject":q['orig_cat']})
+                    st.session_state.last_is_correct = ok
+                    if ok and st.session_state.retry_count == 0:
+                        st.session_state.correct_count += 1; st.session_state.session_streak += 1
+                    elif not ok: st.session_state.session_streak = 0
+                    st.session_state.show_result = True; st.rerun()
         else:
-            st.subheader(display_q)
-            if hint_p: st.info(f"💡 {hint_p}")
-            canvas_res = st_canvas(stroke_width=9, height=250, width=1200, key=f"c_{st.session_state.index}", background_color="#f8f9fb")
-            st.write("---"); target_col = st.container()
+            if st.button("判定・選択肢表示", width='stretch', type="primary"): st.session_state.show_options = True; st.rerun()
 
-        with target_col:
-            if is_math: st.write("---")
-            if st.session_state.show_result:
-                if st.session_state.last_is_correct:
-                    st.success(f"### ✨ 正解！ : {format_math_text(q['a'])}")
-                    if st.button("次へ進む ➡️", use_container_width=True, type="primary"): st.session_state.index += 1; st.session_state.show_result = False; st.session_state.show_options = False; st.session_state.user_ans_list = []; st.rerun()
-                else:
-                    st.error(f"### ❌ ざんねん！ 正解は **{format_math_text(q['a'])}**")
-                    if st.button("理解した！次へ ➡️", use_container_width=True): st.session_state.index += 1; st.session_state.show_result = False; st.session_state.show_options = False; st.session_state.user_ans_list = []; st.rerun()
-            else:
-                if not st.session_state.show_options:
-                    if st.button("🔍 判定へ", use_container_width=True): st.session_state.show_options = True; st.rerun()
-                
-                if st.session_state.show_options:
-                    st.write("**答えを選択：**")
-                    if is_order_q:
-                        words = [w.strip() for w in main_p.replace("(","").replace(")","").replace("?","").replace(".","").split("/") if w.strip()]
-                        current = st.session_state.user_ans_list; disp = [w for w in words if w not in current]
-                        if current: st.info(" ".join(current))
-                        if disp:
-                            cols = st.columns(len(disp))
-                            for i, w in enumerate(disp):
-                                if cols[i].button(w, key=f"w_{i}_{len(current)}", use_container_width=True):
-                                    st.session_state.user_ans_list.append(w); st.rerun()
-                        bc1, bc2 = st.columns(2)
-                        with bc1:
-                            if st.button("⬅️ 戻す", use_container_width=True):
-                                if st.session_state.user_ans_list: st.session_state.user_ans_list.pop(); st.rerun()
-                        with bc2:
-                            if st.button("🗑️ クリア", use_container_width=True): st.session_state.user_ans_list = []; st.rerun()
-                        if len(current) == len(words):
-                            is_ok = " ".join(current).lower() == q['a'].lower()
-                            st.session_state.pending_results.append({'q': q['q'], 'is_ok': is_ok, 'rank': q.get('rank','A'), 'subject': q['orig_cat']})
-                            st.components.v1.html(f"<script>window.parent.playJudge({str(is_ok).lower()});</script>", height=0)
-                            if is_ok: st.session_state.session_streak += 1; st.session_state.session_max_streak = max(st.session_state.session_max_streak, st.session_state.session_streak)
-                            else: st.session_state.session_streak = 0
-                            st.session_state.last_is_correct = is_ok; time.sleep(0.5); st.session_state.show_result = True; st.rerun()
-                    else:
-                        if 'cur_opts' not in st.session_state or st.session_state.get('last_q_id') != st.session_state.index:
-                            opts = [q['a']] + generate_clever_distractors(q['a'], q['orig_cat'], st.session_state.all_ans_in_set)
-                            st.session_state.cur_opts = random.sample(list(set(opts)), len(list(set(opts)))); st.session_state.last_q_id = st.session_state.index
-                        
-                        o_cols = st.columns(len(st.session_state.cur_opts))
-                        for i, opt in enumerate(st.session_state.cur_opts):
-                            with o_cols[i]:
-                                if st.button(format_math_text(opt), key=f"o_{i}", use_container_width=True):
-                                    is_ok = (str(opt).lower() == str(q['a']).lower())
-                                    st.session_state.pending_results.append({'q': q['q'], 'is_ok': is_ok, 'rank': q.get('rank','A'), 'subject': q['orig_cat']})
-                                    st.components.v1.html(f"<script>window.parent.playJudge({str(is_ok).lower()});</script>", height=0)
-                                    if is_ok: st.session_state.session_streak += 1; st.session_state.session_max_streak = max(st.session_state.session_max_streak, st.session_state.session_streak)
-                                    else: st.session_state.session_streak = 0
-                                    st.session_state.last_is_correct = is_ok; time.sleep(0.5); st.session_state.show_result = True; st.rerun()
+# --- 8. 【最後に実行】予約された音を鳴らす ---
+execute_queued_sound()
