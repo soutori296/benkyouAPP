@@ -11,7 +11,7 @@ from google.oauth2.service_account import Credentials
 
 # --- 1. st.set_page_config ---
 st.set_page_config(
-    page_title="高校受験対策 🛡️ DB即時反映・完全版", 
+    page_title="高校受験対策 🛡️ 並べ替え修正・完全版", 
     layout="wide", 
     initial_sidebar_state="expanded"
 )
@@ -32,7 +32,7 @@ def init_session():
 
 init_session()
 
-# --- 3. 音声予約システム ---
+# --- 3. 音声予約システム (0.8秒ディレイ) ---
 def queue_sound(file_name):
     if st.session_state.sound_enabled:
         st.session_state.play_this = file_name
@@ -60,6 +60,7 @@ def compare_answers(u, c):
     return normalize(u) == normalize(c)
 
 def parse_order_question(text):
+    """並べ替え問題のカッコ内を抽出"""
     match = re.search(r'\((.*?/.*?)\)', str(text))
     if match:
         words = [w.strip() for w in match.group(1).split('/') if w.strip()]
@@ -67,7 +68,7 @@ def parse_order_question(text):
         return jp, words
     return text, []
 
-# --- 5. API・データ連携 (A:category, B:rank, C:q, D:a, E:h) ---
+# --- 5. API・データ連携 ---
 def get_creds():
     if "gcp_service_account" in st.secrets:
         return Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"])
@@ -76,7 +77,7 @@ def get_creds():
 @st.cache_data(ttl=60)
 def load_db():
     creds = get_creds()
-    if not creds: return {}, {"cat_stats": [], "avg": 0, "reports": [], "last_sub": ""}
+    if not creds: return {}, {"cat_stats": [], "avg": 0, "reports": []}
     try:
         gc = gspread.authorize(creds); ss = gc.open("study_stats_db")
         q_rows = ss.worksheet("questions").get_all_records()
@@ -99,7 +100,6 @@ def load_db():
         return organized, {"all_ans": [str(r['a']) for r in q_rows], "cat_stats": cat_stats, "avg": int((t_c/t_a*100)) if t_a>0 else 0, "last_sub": last_sub, "reports": reports}
     except: return {}, {"cat_stats": [], "avg": 0}
 
-# ★【最重要】マスターDB修正関数
 def update_db_question_master(old_cat, old_q, new_rank, new_q, new_a):
     try:
         sh = gspread.authorize(get_creds()).open("study_stats_db").worksheet("questions")
@@ -107,9 +107,7 @@ def update_db_question_master(old_cat, old_q, new_rank, new_q, new_a):
         for i, row in enumerate(records):
             if str(row.get('category')) == str(old_cat) and str(row.get('q')) == str(old_q):
                 row_num = i + 2
-                sh.update_cell(row_num, 2, new_rank) # B: rank
-                sh.update_cell(row_num, 3, new_q)    # C: q
-                sh.update_cell(row_num, 4, new_a)    # D: a
+                sh.update_cell(row_num, 2, new_rank); sh.update_cell(row_num, 3, new_q); sh.update_cell(row_num, 4, new_a)
                 return True
         return False
     except: return False
@@ -117,21 +115,20 @@ def update_db_question_master(old_cat, old_q, new_rank, new_q, new_a):
 def batch_save_to_db():
     if not st.session_state.results_buffer: return
     try:
-        with st.spinner("💾 同期中..."):
-            sh = gspread.authorize(get_creds()).open("study_stats_db").sheet1
-            all_r = sh.get_all_records()
-            for res in st.session_state.results_buffer:
-                q_t, is_ok, r_v, s_v = res["q"], res["is_correct"], res.get("rank","-"), res.get("subject","共通")
-                f_row = -1
-                for i, row in enumerate(all_r):
-                    if str(row.get('q')) == str(q_t): f_row = i + 2; break
-                if f_row != -1:
-                    col = 2 if is_ok else 3
-                    curr = int(sh.cell(f_row, col).value or 0)
-                    sh.update_cell(f_row, col, curr + 1)
-                    sh.update_cell(f_row, 4, r_v); sh.update_cell(f_row, 5, s_v)
-                else: sh.append_row([str(q_t), 1 if is_ok else 0, 0 if is_ok else 1, r_v, s_v])
-            st.session_state.results_buffer = []; st.cache_data.clear(); st.toast("同期完了！")
+        sh = gspread.authorize(get_creds()).open("study_stats_db").sheet1
+        all_r = sh.get_all_records()
+        for res in st.session_state.results_buffer:
+            q_t, is_ok, r_v, s_v = res["q"], res["is_correct"], res.get("rank","-"), res.get("subject","共通")
+            f_row = -1
+            for i, row in enumerate(all_r):
+                if str(row.get('q')) == str(q_t): f_row = i + 2; break
+            if f_row != -1:
+                col = 2 if is_ok else 3
+                curr = int(sh.cell(f_row, col).value or 0)
+                sh.update_cell(f_row, col, curr + 1)
+                sh.update_cell(f_row, 4, r_v); sh.update_cell(f_row, 5, s_v)
+            else: sh.append_row([str(q_t), 1 if is_ok else 0, 0 if is_ok else 1, r_v, s_v])
+        st.session_state.results_buffer = []; st.cache_data.clear(); st.toast("同期完了！")
     except: st.error("保存失敗")
 
 all_q, db = load_db()
@@ -147,17 +144,17 @@ with st.sidebar:
     
     if st.session_state.mode:
         if st.button("🏳️ 特訓中止", width='stretch'): st.session_state.clear(); st.rerun()
-        # 報告機能
+        # 報告
         idx = st.session_state.index
         if idx < len(st.session_state.questions):
             cur = st.session_state.questions[idx]
             with st.expander("🚨 ミス報告"):
                 m = st.text_input("内容", key="rpt_in")
-                if st.button("パパへ送信", width='stretch'):
+                if st.button("送信", width='stretch'):
                     try:
                         sh_rpt = gspread.authorize(get_creds()).open("study_stats_db").worksheet("reports")
-                        sh_rpt.append_row([datetime.now().strftime("%m/%d %H:%M"), cur['orig_cat'], cur['q'], cur['a'], m])
-                        st.toast("報告しました！")
+                        sh_rpt.append_row([datetime.now().strftime("%Y/%m/%d %H:%M"), cur['orig_cat'], cur['q'], cur['a'], m])
+                        st.toast("報告完了")
                     except: st.error("失敗")
 
     if st.session_state.results_buffer:
@@ -165,24 +162,16 @@ with st.sidebar:
 
     for _ in range(10): st.write("")
     st.divider()
-    if st.checkbox("👨‍👩‍👧 保護者メニュー（管理）", value=False):
-        t1, t2 = st.tabs(["🛠️ 修正", "📋 履歴"])
-        with t1:
-            if st.session_state.mode and st.session_state.index < len(st.session_state.questions):
-                cur = st.session_state.questions[st.session_state.index]
-                st.caption(f"教科: {cur['orig_cat']}")
-                nq = st.text_area("問題文修正", value=cur['q'], key="fix_q")
-                na = st.text_input("正解修正", value=cur['a'], key="fix_a")
-                nr = st.text_input("Rank修正", value=cur['rank'], key="fix_r")
-                # ★【修正完了】ここが本当のDB更新ボタン
-                if st.button("✅ DBを書き換える", width='stretch'):
-                    if update_db_question_master(cur['orig_cat'], cur['q'], nr, nq, na):
-                        st.cache_data.clear() # 記憶を消してDBから読み直し
-                        st.success("スプレッドシートを更新しました！"); time.sleep(1); st.rerun()
-                    else: st.error("更新に失敗しました")
-            else: st.info("特訓中にここを開くと修正できます")
-        with t2:
-            if db.get('reports'): st.dataframe(pd.DataFrame(db['reports']).tail(5), width='stretch', hide_index=True)
+    if st.checkbox("👨‍👩‍👧 保護者メニュー", value=False):
+        if st.session_state.mode and st.session_state.index < len(st.session_state.questions):
+            cur = st.session_state.questions[st.session_state.index]
+            nq = st.text_area("問題修正", value=cur['q'], key="fix_q")
+            na = st.text_input("正解修正", value=cur['a'], key="fix_a")
+            nr = st.text_input("Rank修正", value=cur['rank'], key="fix_r")
+            if st.button("✅ DBを書き換える", width='stretch'):
+                if update_db_question_master(cur['orig_cat'], cur['q'], nr, nq, na):
+                    st.cache_data.clear(); st.success("完了！"); time.sleep(1); st.rerun()
+        else: st.info("特訓中に直せます")
 
 # --- 7. メイン画面 ---
 if not st.session_state.mode:
@@ -197,13 +186,11 @@ if not st.session_state.mode:
         qs = []
         for c in target: qs.extend(all_q.get(c, []))
         if diff == "🧩 並べ替え特訓": qs = [x for x in qs if "/" in str(x['q'])]
-        elif diff == "🔥 苦手克服": qs = [x for x in qs if str(x['q']) in str(db.get('reports',''))] # 簡易的な苦手
         if not qs: st.error("対象なし"); st.stop()
         random.shuffle(qs)
         st.session_state.questions = qs[:30]; st.session_state.all_ans_pool = db.get("all_ans", [])
         st.session_state.mode = sub; st.session_state.index = 0; st.session_state.correct_count = 0; st.session_state.session_streak = 0; st.rerun()
 else:
-    # クイズ実行中ロジック
     idx = st.session_state.index; qs = st.session_state.questions
     if idx >= len(qs):
         if st.session_state.results_buffer: batch_save_to_db()
@@ -228,23 +215,48 @@ else:
                     st.session_state.retry_count += 1; st.session_state.show_result = False; st.session_state.user_ans_list = []; st.rerun()
         elif st.session_state.show_options:
             cor_a = str(q['a'])
-            # 択一/並べ替え判定
-            if not st.session_state.current_opts:
-                opts = [cor_a] + random.sample(db.get('all_ans', []), 3)
-                random.shuffle(opts); st.session_state.current_opts = opts
-            cols = st.columns(len(st.session_state.current_opts))
-            for i, o in enumerate(st.session_state.current_opts):
-                if cols[i].button(o, key=f"opt_{idx}_{i}", width='stretch'):
-                    ok = compare_answers(o, cor_a)
-                    queue_sound("correct.mp3" if ok else "wrong.mp3")
-                    st.session_state.results_buffer.append({"q":q['q'], "is_correct":ok, "rank":q['rank'], "subject":q['orig_cat']})
-                    st.session_state.last_is_correct = ok
-                    if ok and st.session_state.retry_count == 0:
-                        st.session_state.correct_count += 1; st.session_state.session_streak += 1
-                    elif not ok: st.session_state.session_streak = 0
-                    st.session_state.show_result = True; st.rerun()
+            # ★【修正の核】並べ替えと択一を完全に分岐
+            if order_w:
+                if not st.session_state.current_opts:
+                    o = list(order_w); random.shuffle(o); st.session_state.current_opts = o
+                curr = st.session_state.user_ans_list; disp = list(st.session_state.current_opts)
+                for w in curr: 
+                    if w in disp: disp.remove(w)
+                if curr: st.info(" ".join(curr))
+                cols = st.columns(min(len(disp)+1, 8))
+                for i, w in enumerate(disp):
+                    if cols[i % 8].button(w, key=f"w_{idx}_{i}"):
+                        st.session_state.user_ans_list.append(w); st.rerun()
+                bc1, bc2 = st.columns(2)
+                with bc1:
+                    if st.button("判定する", width='stretch', type="primary") and curr:
+                        ok = compare_answers("".join(curr), cor_a)
+                        queue_sound("correct.mp3" if ok else "wrong.mp3")
+                        st.session_state.results_buffer.append({"q":q['q'], "is_correct":ok, "rank":q['rank'], "subject":q['orig_cat']})
+                        st.session_state.last_is_correct = ok
+                        if ok and st.session_state.retry_count == 0: st.session_state.correct_count += 1; st.session_state.session_streak += 1
+                        elif not ok: st.session_state.session_streak = 0
+                        st.session_state.show_result = True; st.rerun()
+                with bc2:
+                    if st.button("🗑️ クリア", width='stretch'): st.session_state.user_ans_list = []; st.rerun()
+            else:
+                # 4択モード（不要なものが混ざるのはここだけ）
+                if not st.session_state.current_opts:
+                    others = [a for a in st.session_state.all_ans_pool if str(a).strip() != cor_a.strip()]
+                    opts = [cor_a] + random.sample(others, min(len(others), 3))
+                    random.shuffle(opts); st.session_state.current_opts = opts
+                cols = st.columns(len(st.session_state.current_opts))
+                for i, o in enumerate(st.session_state.current_opts):
+                    if cols[i].button(o, key=f"opt_{idx}_{i}", width='stretch'):
+                        ok = compare_answers(o, cor_a)
+                        queue_sound("correct.mp3" if ok else "wrong.mp3")
+                        st.session_state.results_buffer.append({"q":q['q'], "is_correct":ok, "rank":q['rank'], "subject":q['orig_cat']})
+                        st.session_state.last_is_correct = ok
+                        if ok and st.session_state.retry_count == 0: st.session_state.correct_count += 1; st.session_state.session_streak += 1
+                        elif not ok: st.session_state.session_streak = 0
+                        st.session_state.show_result = True; st.rerun()
         else:
             if st.button("判定・選択肢表示", width='stretch', type="primary"): st.session_state.show_options = True; st.rerun()
 
-# --- 8. 【最後に実行】予約された音を鳴らす ---
+# --- 8. 音声予約実行 ---
 execute_queued_sound()
