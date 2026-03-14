@@ -5,10 +5,7 @@ from datetime import datetime, timedelta
 import gspread
 from google.oauth2.service_account import Credentials
 
-# --- 1. 基本設定 ---
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-QUESTIONS_FILE = os.path.join(BASE_DIR, "questions.json")
-
+# --- 1. 基本設定・API連携 ---
 def get_gsheet_client():
     if "gcp_service_account" in st.secrets:
         try:
@@ -18,21 +15,55 @@ def get_gsheet_client():
         except: return None
     return None
 
-@st.cache_data(ttl=300, show_spinner="読込中...")
+# ★ 問題データをスプレッドシートの「questions」シートから読み込む
+@st.cache_data(ttl=60)
+def load_questions_from_gsheet():
+    client = get_gsheet_client()
+    if not client: return {}
+    try:
+        sh = client.open("study_stats_db").worksheet("questions")
+        data = sh.get_all_records()
+        organized = {}
+        for row in data:
+            cat = row.get('category', '共通')
+            if cat not in organized: organized[cat] = []
+            organized[cat].append({
+                "rank": row.get('rank', 'A'),
+                "q": str(row.get('q', '')),
+                "a": str(row.get('a', '')),
+                "h": str(row.get('h', ''))
+            })
+        return organized
+    except: return {}
+
+# ★ 成績データを読み込む
+@st.cache_data(ttl=300)
 def load_all_stats_cached():
     client = get_gsheet_client()
     if not client: return {"history": {}, "status": "no_client"}
     try:
         sh = client.open("study_stats_db").sheet1
-        if not sh.cell(1, 1).value:
-            sh.insert_row(["q", "correct", "wrong", "rank", "subject"], 1)
-            return {"history": {}, "status": "ok"}
         data = sh.get_all_records()
         history = {str(row['q']): {"correct": int(row['correct'] or 0), "wrong": int(row['wrong'] or 0), 
                                   "rank": str(row.get('rank', 'A')), "subject": str(row.get('subject', '不明'))} for row in data if row.get('q')}
         return {"history": history, "status": "ok"}
     except Exception as e:
         return {"history": {}, "status": "error", "message": str(e)}
+
+# ★ 問題文をスプレッドシート上で直接更新する
+def update_question_in_gsheet(old_q, new_q, new_a):
+    client = get_gsheet_client()
+    if client:
+        try:
+            sh = client.open("study_stats_db").worksheet("questions")
+            cell = sh.find(old_q)
+            if cell:
+                # 3列目がq, 4列目がa (category=1, rank=2, q=3, a=4)
+                sh.update_cell(cell.row, 3, new_q)
+                sh.update_cell(cell.row, 4, new_a)
+                return True
+        except: pass
+    return False
 
 def save_stat(q_text, is_correct, rank, subject):
     client = get_gsheet_client()
@@ -66,11 +97,6 @@ def parse_q_display(text):
         if main_p: return main_p, hint_p
     return text, ""
 
-# セッション初期化
-if "questions_data" not in st.session_state and os.path.exists(QUESTIONS_FILE):
-    with open(QUESTIONS_FILE, "r", encoding="utf-8") as f:
-        st.session_state.questions_data = json.load(f)
-
 for k, v in {"user_ans_list": [], "show_options": False, "show_result": False, 
              "last_is_correct": False, "score": 0, "index": 0, "session_streak": 0}.items():
     if k not in st.session_state: st.session_state[k] = v
@@ -78,66 +104,44 @@ for k, v in {"user_ans_list": [], "show_options": False, "show_result": False,
 st.set_page_config(page_title="70点マスター", layout="centered")
 setup_audio_engine()
 
-# --- 2. サイドバー：メンテナンス機能 ---
+# --- 2. サイドバー ---
 with st.sidebar:
     st.title("📊 学習管理")
-    if st.button("🔄 データを更新", use_container_width=True):
+    if st.button("🔄 データを最新に更新", use_container_width=True):
         st.cache_data.clear(); st.rerun()
 
     res = load_all_stats_cached()
     hist = res.get("history", {})
     
-    # 教科別表示
+    # ★ その場で修正機能
+    with st.expander("📝 問題文を直接修正"):
+        search_txt = st.text_input("修正したい問題のキーワード")
+        if search_txt:
+            all_qs = load_questions_from_gsheet()
+            for cat, q_list in all_qs.items():
+                for q_item in q_list:
+                    if search_txt in q_item['q']:
+                        new_q = st.text_input("問題文", value=q_item['q'], key=f"ed_q_{q_item['q']}")
+                        new_a = st.text_input("正解", value=q_item['a'], key=f"ed_a_{q_item['q']}")
+                        if st.button("この内容で保存", key=f"btn_{q_item['q']}"):
+                            if update_question_in_gsheet(q_item['q'], new_q, new_a):
+                                st.success("保存完了！更新ボタンを押してください。")
+                            else: st.error("保存失敗")
+
+    st.divider()
     if hist:
         subjects = sorted(list(set(v.get("subject", "不明") for v in hist.values())))
         for sub in subjects:
             sub_qs = [v for v in hist.values() if v.get("subject") == sub]
-            total_t = sum(v["correct"] + v["wrong"] for v in sub_qs)
-            total_c = sum(v["correct"] for v in sub_qs)
+            total_t = sum(v["correct"] + v["wrong"] for v in sub_qs); total_c = sum(v["correct"] for v in sub_qs)
             rate = int(total_c / total_t * 100) if total_t > 0 else 0
-            st.write(f"**{sub}**: {rate}点 ({total_t}回)")
-            st.progress(rate / 100)
-    
-    st.divider()
-    
-    # ★ 苦手問題ダウンロード
-    with st.expander("📥 苦手問題の出力"):
-        weaks = [f"【{v['subject']}】{q} (ミス:{v['wrong']}回)" for q, v in hist.items() if v['wrong'] > 0]
-        if weaks:
-            weak_text = "\n".join(weaks)
-            st.download_button("苦手リストをダウンロード(.txt)", weak_text, file_name="weak_list.txt")
-        else:
-            st.write("苦手な問題はまだありません。")
-
-    # ★ 問題文の修正
-    with st.expander("📝 問題文を修正する"):
-        st.warning("修正後は下部のJSONをダウンロードしてGitHubへ反映させてください。")
-        search_q = st.text_input("修正したい問題（キーワード）")
-        if search_q and "questions_data" in st.session_state:
-            found = False
-            for cat, q_list in st.session_state.questions_data.items():
-                for i, q_item in enumerate(q_list):
-                    if search_q in q_item['q']:
-                        new_q = st.text_input(f"問題文の変更 ({cat})", value=q_item['q'], key=f"edit_q_{i}")
-                        new_a = st.text_input(f"答えの変更", value=q_item['a'], key=f"edit_a_{i}")
-                        if st.button("この修正を保存", key=f"btn_{i}"):
-                            st.session_state.questions_data[cat][i]['q'] = new_q
-                            st.session_state.questions_data[cat][i]['a'] = new_a
-                            st.success("修正しました！下のJSONを保存してください。")
-                        found = True; break
-            if not found: st.write("見つかりません。")
-
-    # ★ 最新JSONの書き出し
-    if "questions_data" in st.session_state:
-        st.divider()
-        json_str = json.dumps(st.session_state.questions_data, ensure_ascii=False, indent=2)
-        st.download_button("✅ 修正済みのquestions.jsonを保存", json_str, file_name="questions.json", use_container_width=True)
+            st.write(f"**{sub}**: {rate}点 ({total_t}回)"); st.progress(rate / 100)
 
 # --- 3. メイン画面 ---
 if 'mode' not in st.session_state:
-    st.title("🛡️ yoshi式・70点奪取特訓")
-    if "questions_data" in st.session_state:
-        all_q = st.session_state.questions_data
+    st.title("🛡️ 70点奪取特訓")
+    all_q = load_questions_from_gsheet()
+    if all_q:
         sub = st.selectbox("特訓セットを選択", list(all_q.keys()))
         diff = st.radio("モード選択", ["ミックス", "🧩 並べ替え特訓", "基礎(Rank A)", "標準(Rank B)", "難問(Rank C)", "🔥 苦手克服"], horizontal=True)
         if st.button("特訓開始！", use_container_width=True):
@@ -148,7 +152,7 @@ if 'mode' not in st.session_state:
             elif "苦手克服" in diff:
                 wrong_list = [q_t for q_t, v in hist.items() if v.get("wrong", 0) > 0]
                 filtered = [q for q in data if q['q'] in wrong_list]
-                if not filtered: st.warning("まだ苦手な問題がありません。ミックスで開始。"); filtered = data
+                if not filtered: st.warning("苦手な問題がありません。"); filtered = data
             else: filtered = data
             random.shuffle(filtered); st.session_state.questions = filtered[:50]
             st.session_state.index, st.session_state.score, st.session_state.session_streak = 0, 0, 0
@@ -162,8 +166,8 @@ else:
         q = st.session_state.questions[st.session_state.index]; is_order_q = "/" in q['q']
         if st.session_state.show_result:
             if st.session_state.last_is_correct:
-                st.success(f"⭕ 正解！")
-                time.sleep(1.2); st.session_state.index += 1; st.session_state.show_result = False
+                st.success("⭕ 正解！"); time.sleep(1.2)
+                st.session_state.index += 1; st.session_state.show_result = False
                 st.session_state.show_options = False; st.session_state.user_ans_list = []; st.rerun()
             else:
                 st.error(f"❌ 正解は: {q['a']}")
