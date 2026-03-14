@@ -11,7 +11,7 @@ from google.oauth2.service_account import Credentials
 
 # --- 1. st.set_page_config ---
 st.set_page_config(
-    page_title="🛡️　高校受験対策", 
+    page_title="高校受験対策 🛡️ 数式対応・完全統合版", 
     layout="wide", 
     initial_sidebar_state="expanded"
 )
@@ -32,7 +32,7 @@ def init_session():
 
 init_session()
 
-# --- 3. 音声予約システム (0.8秒ディレイ) ---
+# --- 3. 音声予約システム (安定再生用) ---
 def queue_sound(file_name):
     if st.session_state.sound_enabled:
         st.session_state.play_this = file_name
@@ -53,6 +53,8 @@ def compare_answers(u, c):
     if not u or not c: return False
     def normalize(s):
         s = str(s).lower()
+        # LaTeX記号を除去して比較 (判定を甘くするため)
+        s = re.sub(r'[\$\{\}\\]', '', s)
         s = re.sub(r'[\s\u3000\t\n\r\xa0]', '', s)
         s = re.sub(r'^[a-z]\s*=\s*', '', s)
         s = re.sub(r'[.\?\!。？！]+$', '', s)
@@ -60,7 +62,6 @@ def compare_answers(u, c):
     return normalize(u) == normalize(c)
 
 def parse_order_question(text):
-    """並べ替え問題のカッコ内を抽出"""
     match = re.search(r'\((.*?/.*?)\)', str(text))
     if match:
         words = [w.strip() for w in match.group(1).split('/') if w.strip()]
@@ -68,7 +69,7 @@ def parse_order_question(text):
         return jp, words
     return text, []
 
-# --- 5. API・データ連携 ---
+# --- 5. API・データ連携 (A:category, B:rank, C:q, D:a, E:h) ---
 def get_creds():
     if "gcp_service_account" in st.secrets:
         return Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"])
@@ -144,7 +145,6 @@ with st.sidebar:
     
     if st.session_state.mode:
         if st.button("🏳️ 特訓中止", width='stretch'): st.session_state.clear(); st.rerun()
-        # 報告
         idx = st.session_state.index
         if idx < len(st.session_state.questions):
             cur = st.session_state.questions[idx]
@@ -199,11 +199,14 @@ else:
     else:
         q = qs[idx]; jp_p, order_w = parse_order_question(q['q'])
         st.caption(f"残り {len(qs)-idx} 問 / 30問中　🔥 {st.session_state.session_streak}連勝　Rank: {q['rank']}")
+        # ★【数式対応】st.markdownを使うことでLaTeXをレンダリング
         if order_w: st.markdown(f'### ( {" / ".join(order_w)} ) {jp_p}')
         else: st.markdown(f'### {q["q"]}')
+        
         st_canvas(stroke_width=9, height=450, width=1200, key=f"cv_{idx}_{st.session_state.retry_count}", background_color="#f8f9fb", update_streamlit=False)
         
         if st.session_state.show_result:
+            # ★【数式対応】正解表示もLaTeX対応
             if st.session_state.last_is_correct: st.success(f"✨ 正解！ : {q['a']}")
             else: st.error(f"❌ 正解は **{q['a']}**")
             c1, c2 = st.columns(2)
@@ -215,7 +218,6 @@ else:
                     st.session_state.retry_count += 1; st.session_state.show_result = False; st.session_state.user_ans_list = []; st.rerun()
         elif st.session_state.show_options:
             cor_a = str(q['a'])
-            # ★【修正の核】並べ替えと択一を完全に分岐
             if order_w:
                 if not st.session_state.current_opts:
                     o = list(order_w); random.shuffle(o); st.session_state.current_opts = o
@@ -240,13 +242,15 @@ else:
                 with bc2:
                     if st.button("🗑️ クリア", width='stretch'): st.session_state.user_ans_list = []; st.rerun()
             else:
-                # 4択モード（不要なものが混ざるのはここだけ）
+                # 4択モード
                 if not st.session_state.current_opts:
                     others = [a for a in st.session_state.all_ans_pool if str(a).strip() != cor_a.strip()]
                     opts = [cor_a] + random.sample(others, min(len(others), 3))
                     random.shuffle(opts); st.session_state.current_opts = opts
                 cols = st.columns(len(st.session_state.current_opts))
                 for i, o in enumerate(st.session_state.current_opts):
+                    # ★【数式対応】ボタン上のテキストもLaTeX対応させる場合は st.markdown を使う必要があるが、
+                    # ボタン自体にLaTeXを入れるのは制限があるため、ここではテキストのまま表示します。
                     if cols[i].button(o, key=f"opt_{idx}_{i}", width='stretch'):
                         ok = compare_answers(o, cor_a)
                         queue_sound("correct.mp3" if ok else "wrong.mp3")
