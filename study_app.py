@@ -164,26 +164,19 @@ with st.sidebar:
             
             with p_tabs[1]:
                 all_q_edit = load_questions_from_gsheet()
-                # 1. 検索バー（ボタンやドロップダウンは廃止）
                 src = st.text_input("🔍 問題を検索 (キーワードを入れると自動セット)", placeholder="例: I have a pen")
-                
-                # 自動セットロジック
                 match = None
                 if src:
-                    # 検索語がある場合は全教科からヒットする最初のものを探す
                     for c, items in all_q_edit.items():
                         for i in items:
                             if src.lower() in i['q'].lower():
                                 match = {"cat": c, "q": i['q'], "a": i['a']}; break
                         if match: break
                 elif 'mode' in st.session_state and st.session_state.index < len(st.session_state.questions):
-                    # 検索語がない時は「今の問題」をセット
                     cur = st.session_state.questions[st.session_state.index]
                     match = {"cat": st.session_state.mode, "q": cur['q'], "a": cur['a']}
                 
                 st.session_state.p_edit_obj = match
-                
-                # 2. 修正入力欄（値がない時は自動で空白）
                 target = st.session_state.p_edit_obj
                 if target: st.caption(f"対象教科: {target['cat']}")
                 new_q = st.text_input("問題文 (修正)", value=target['q'] if target else "")
@@ -202,21 +195,46 @@ if 'mode' not in st.session_state:
         q_keys = list(all_q.keys()); last_sub = stats_data['last_sub']
         sub = st.selectbox("特訓セットを選択", q_keys, index=q_keys.index(last_sub) if last_sub in q_keys else 0)
         diff = st.radio("モード選択", ["ミックス", "🧩 並べ替え特訓", "🔥 苦手克服"], horizontal=True)
+        
         if st.button("特訓開始！", use_container_width=True):
-            save_last_subject(sub); st.session_state.mode = sub; data = all_q.get(sub, [])
+            save_last_subject(sub)
+            st.session_state.mode = sub
+            data = all_q.get(sub, [])
+            
+            # --- ここでフィルタリングを実施 ---
+            # 1. 未習熟またはランダム抽出
             filtered = [q for q in data if int(stats_data['history'].get(q['q'], {}).get('correct', 0)) < 5 or random.random() < 0.2]
-            if "並べ替え" in diff: filtered = [q for q in filtered if "/" in q['q']]
-            elif "苦手克服" in diff: filtered = [q for q in filtered if stats_data['history'].get(q['q'], {}).get('wrong', 0) > 0]
+            
+            # 2. 数学の場合、並べ替え形式とみなされる問題（/を含み、答えにスペースがある）を完全に除外
+            if "数学" in sub:
+                filtered = [q for q in filtered if not ("/" in q['q'] and " " in str(q['a']).strip())]
+            
+            # 3. ユーザー選択のモード適用
+            if "並べ替え" in diff:
+                filtered = [q for q in filtered if "/" in q['q']]
+            elif "苦手克服" in diff:
+                filtered = [q for q in filtered if stats_data['history'].get(q['q'], {}).get('wrong', 0) > 0]
+            
             if not filtered: filtered = data
-            random.shuffle(filtered); st.session_state.questions = filtered[:50]; st.session_state.all_ans_in_set = [q['a'] for q in data]; st.session_state.index = 0; st.session_state.session_streak = 0; st.session_state.session_max_streak = 0; st.session_state.pending_results = []; st.session_state.show_result = False; st.rerun()
+            
+            random.shuffle(filtered)
+            st.session_state.questions = filtered[:50]
+            st.session_state.all_ans_in_set = [q['a'] for q in data]
+            st.session_state.index = 0
+            st.session_state.session_streak = 0
+            st.session_state.session_max_streak = 0
+            st.session_state.pending_results = []
+            st.session_state.show_result = False
+            st.rerun()
 else:
     total = len(st.session_state.questions)
     if st.session_state.index >= total:
         sync_results_to_gsheet(); st.balloons(); st.success("特訓終了！")
         if st.button("TOPへ戻る"): st.session_state.clear(); st.rerun()
     else:
-        q = st.session_state.questions[st.session_state.index]; is_math = "数学" in st.session_state.mode
-        # ★ 数学の割り算（/）を並べ替えと誤認しないロジック
+        q = st.session_state.questions[st.session_state.index]
+        is_math = "数学" in st.session_state.mode
+        # 出題時の表示形式判定
         is_order_q = ("/" in q['q']) and (" " in str(q['a']).strip())
         
         main_p, hint_p = parse_q_display(q['q']); display_q = format_math_text(main_p)
