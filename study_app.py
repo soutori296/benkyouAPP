@@ -24,13 +24,15 @@ def load_questions_from_gsheet():
         organized = {}
         for row in data:
             cat = row.get('category', '共通')
-            if not cat or ("数学" in str(cat) and "/" in str(row.get('q', ''))): continue
+            if not row.get('q') or not row.get('a'): continue
             if cat not in organized: organized[cat] = []
             organized[cat].append({"rank": row.get('rank', 'A'), "q": str(row.get('q', '')), "a": str(row.get('a', '')), "h": str(row.get('h', ''))})
         return organized
-    except: return {}
+    except Exception as e:
+        st.error(f"問題データ読み込み失敗: {e}")
+        return {}
 
-# ★ 新機能：問題文と正解を直接修正する関数
+# ★ 問題修正用の関数
 def update_question_in_gsheet(category, old_q, new_q, new_a):
     creds = get_creds()
     if not creds: return False
@@ -40,13 +42,12 @@ def update_question_in_gsheet(category, old_q, new_q, new_a):
         records = sh.get_all_records()
         for i, row in enumerate(records):
             if str(row.get('category')) == category and str(row.get('q')) == old_q:
-                # シートの行番号はインデックス+2 (1-based + ヘッダー)
                 row_idx = i + 2
-                sh.update_cell(row_idx, 2, new_q) # 列B: q
-                sh.update_cell(row_idx, 3, new_a) # 列C: a
+                sh.update_cell(row_idx, 2, new_q) # q列を更新
+                sh.update_cell(row_idx, 3, new_a) # a列を更新
                 return True
     except Exception as e:
-        st.error(f"修正失敗: {e}")
+        st.error(f"修正保存エラー: {e}")
     return False
 
 def load_all_stats_with_records():
@@ -158,9 +159,7 @@ for k, v in {"user_ans_list": [], "show_options": False, "show_result": False, "
 
 st.set_page_config(page_title="高校受験対策", layout="wide")
 setup_audio_engine()
-
-# CSS調整
-st.markdown("""<style>.block-container {padding-top: 1rem !important; padding-bottom: 0rem !important;} header {visibility: hidden;}</style>""", unsafe_allow_html=True)
+st.markdown("""<style>.block-container {padding-top: 1rem !important;} header {visibility: hidden;}</style>""", unsafe_allow_html=True)
 
 # --- 2. サイドバー ---
 with st.sidebar:
@@ -177,41 +176,39 @@ with st.sidebar:
         st.warning(f"👑 歴代最高: {max(rec, st.session_state.session_max_streak)}")
     
     st.divider()
-    # ★ 改良：保護者メニュー
+    # --- 保護者メニュー（統計 & 修正） ---
     with st.expander("👨‍👩‍👧 保護者メニュー"):
         p_mode = st.checkbox("保護者モードを有効にする")
         if p_mode:
-            tab1, tab2 = st.tabs(["📊 統計", "🛠️ 問題修正"])
+            p_tabs = st.tabs(["📈 統計", "🛠️ 問題修正"])
             
-            with tab1:
-                st.write("### 📈 学習状況一覧")
+            with p_tabs[0]:
+                st.write("### 学習状況一覧")
                 df = pd.DataFrame(stats_res["raw_data"])
                 if not df.empty:
                     df['correct'] = pd.to_numeric(df['correct'], errors='coerce').fillna(0)
                     df['wrong'] = pd.to_numeric(df['wrong'], errors='coerce').fillna(0)
                     df['Total'] = df['correct'] + df['wrong']
                     df['正答率'] = (df['correct'] / df['Total'] * 100).fillna(0).round(1)
-                    st.write(df[['subject', 'q', 'correct', 'wrong', '正答率']].sort_values(by='wrong', ascending=False))
-                else: st.write("データなし")
-
-            with tab2:
-                st.write("### 🛠️ 問題エディタ")
-                all_q_data = load_questions_from_gsheet()
-                if all_q_data:
-                    e_sub = st.selectbox("教科を選択", list(all_q_data.keys()), key="edit_sub_sel")
-                    q_titles = [item['q'] for item in all_q_data[e_sub]]
-                    e_q_target = st.selectbox("修正する問題", q_titles, key="edit_q_sel")
+                    st.dataframe(df[['subject', 'q', 'correct', 'wrong', '正答率']], use_container_width=True)
+                else: st.info("データがありません。")
+            
+            with p_tabs[1]:
+                st.write("### 問題エディタ")
+                all_q_edit = load_questions_from_gsheet()
+                if all_q_edit:
+                    e_sub = st.selectbox("教科を選択", list(all_q_edit.keys()), key="p_edit_sub")
+                    q_list = [item['q'] for item in all_q_edit[e_sub]]
+                    e_q_orig = st.selectbox("修正する問題", q_list, key="p_edit_q")
                     
-                    # 選択された問題の現在のデータを取得
-                    target_item = next(item for item in all_q_data[e_sub] if item['q'] == e_q_target)
-                    new_q_text = st.text_input("問題文", value=target_item['q'])
-                    new_a_text = st.text_input("正解", value=target_item['a'])
+                    target = next(item for item in all_q_edit[e_sub] if item['q'] == e_q_orig)
+                    new_q = st.text_input("問題文を修正", value=target['q'])
+                    new_a = st.text_input("正解を修正", value=target['a'])
                     
-                    if st.button("修正内容をスプレッドシートに保存"):
-                        if update_question_in_gsheet(e_sub, e_q_target, new_q_text, new_a_text):
-                            st.success("✅ 保存完了！")
+                    if st.button("スプレッドシートに保存"):
+                        if update_question_in_gsheet(e_sub, e_q_orig, new_q, new_a):
+                            st.success("✅ 修正を保存しました！")
                             st.cache_data.clear(); time.sleep(1); st.rerun()
-
     st.divider(); st.write("<br>" * 10, unsafe_allow_html=True)
 
 # --- 3. メイン画面 ---
@@ -238,7 +235,7 @@ if 'mode' not in st.session_state:
             st.session_state.index, st.session_state.session_streak, st.session_state.session_max_streak, st.session_state.pending_results = 0, 0, 0, []
             st.session_state.show_result = False; st.rerun()
 else:
-    # (クイズ進行ロジック: Ver.172 を完全継承)
+    # クイズ進行ロジックは Ver.173 を継承
     total_q = len(st.session_state.questions)
     if st.session_state.index >= total_q:
         sync_results_to_gsheet(); st.balloons(); st.success("特訓終了！")
@@ -246,29 +243,25 @@ else:
     else:
         q = st.session_state.questions[st.session_state.index]; is_order_q = "/" in q['q']; is_math = "数学" in st.session_state.mode
         main_p, hint_p = parse_q_display(q['q'])
-
         if is_math:
-            col_left, col_right = st.columns([1.5, 1])
-            with col_left:
-                st.write(f"残り {total_q - st.session_state.index} 問")
-                st.subheader(main_p)
+            col_l, col_r = st.columns([1.5, 1])
+            with col_l:
+                st.write(f"残り {total_q - st.session_state.index} 問"); st.subheader(main_p)
                 if hint_p: st.info(f"💡 {hint_p}")
                 canvas_res = st_canvas(stroke_width=9, height=500, width=800, key=f"c_{st.session_state.index}", background_color="#f0f2f6")
-            target_col = col_right
+            target_col = col_r
         else:
-            st.write(f"残り {total_q - st.session_state.index} 問")
-            st.subheader(main_p)
+            st.write(f"残り {total_q - st.session_state.index} 問"); st.subheader(main_p)
             if hint_p: st.info(f"💡 {hint_p}")
             canvas_res = st_canvas(stroke_width=9, height=250, width=1200, key=f"c_{st.session_state.index}", background_color="#f0f2f6")
-            st.write("---")
-            target_col = st.container()
+            st.write("---"); target_col = st.container()
 
         with target_col:
             if is_math: st.write("---")
             if st.session_state.show_result:
                 if st.session_state.last_is_correct:
                     st.success(f"## ✨ 正解！ : {q['a']}")
-                    if st.button("次へ進む ➡️", use_container_width=True, type="primary"):
+                    if st.button("次へ ➡️", use_container_width=True, type="primary"):
                         st.session_state.index += 1; st.session_state.show_result = False; st.session_state.show_options = False; st.session_state.user_ans_list = []; st.rerun()
                 else:
                     st.error(f"## ❌ ざんねん！ 正解は {q['a']}")
@@ -276,14 +269,14 @@ else:
                     if st.button("理解した！次へ ➡️", use_container_width=True):
                         st.session_state.index += 1; st.session_state.show_result = False; st.session_state.show_options = False; st.session_state.user_ans_list = []; st.rerun()
             else:
-                btn_cols = st.columns(2)
-                with btn_cols[0]:
+                b_cols = st.columns(2)
+                with b_cols[0]:
                     if not st.session_state.show_options:
                         if st.button("🔍 判定へ", use_container_width=True):
                             if not is_order_q and (not canvas_res.json_data or len(canvas_res.json_data.get("objects", [])) < 2):
                                 st.error("☝️ 2画以上書いてね！")
                             else: st.session_state.show_options = True; st.rerun()
-                with btn_cols[1]:
+                with b_cols[1]:
                     if st.button("🏳️ 中止保存", use_container_width=True):
                         sync_results_to_gsheet(); st.session_state.clear(); st.rerun()
                 
@@ -291,8 +284,7 @@ else:
                     st.write("**答えを選択：**")
                     if is_order_q:
                         words = [w.strip() for w in main_p.replace("(","").replace(")","").replace("?","").replace(".","").split("/") if w.strip()]
-                        current = st.session_state.user_ans_list
-                        disp = [w for w in words if w not in current]
+                        current = st.session_state.user_ans_list; disp = [w for w in words if w not in current]
                         if current:
                             st.markdown(f"""<div style="background-color:#e1f5fe; padding:15px; border-radius:10px; border-left:5px solid #03a9f4; margin-bottom:20px;"><span style="color:#0277bd; font-size:2.0rem; font-weight:bold; letter-spacing:1px;">{" ".join(current)}</span></div>""", unsafe_allow_html=True)
                         if len(disp) > 0:
