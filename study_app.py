@@ -31,7 +31,6 @@ def load_questions_from_gsheet():
         return organized
     except: return {}
 
-# ★ 教科別の歴代記録を含めて読み込む
 def load_all_stats_with_records():
     client = get_gsheet_client()
     if not client: return {"history": {}, "streaks": {}}
@@ -45,23 +44,17 @@ def load_all_stats_with_records():
             sum_sh = ss.worksheet("summary")
             sum_data = sum_sh.get_all_records()
             streaks = {row['key']: int(row['value'] or 0) for row in sum_data}
-        except:
-            sum_sh = ss.add_worksheet(title="summary", rows="50", cols="5")
-            sum_sh.update('A1:B2', [['key', 'value'], ['total_max', 0]])
-            streaks = {"total_max": 0}
+        except: pass
         return {"history": history, "streaks": streaks}
     except: return {"history": {}, "streaks": {}}
 
-# ★ 教科別の記録をまとめて保存
 def sync_results_to_gsheet():
     if not st.session_state.pending_results: return
     client = get_gsheet_client()
     if not client: return
-
     with st.spinner('記録を保存中...'):
         try:
             ss = client.open("study_stats_db")
-            # 1. 成績の一括更新
             sheet = ss.sheet1
             rows = sheet.get_all_records()
             current_data = {str(r['q']): r for r in rows}
@@ -72,42 +65,33 @@ def sync_results_to_gsheet():
                     current_data[q_t]['wrong'] = int(current_data[q_t]['wrong']) + (0 if res['is_ok'] else 1)
                 else:
                     current_data[q_t] = {'q': q_t, 'correct': 1 if res['is_ok'] else 0, 'wrong': 0 if res['is_ok'] else 1, 'rank': res['rank'], 'subject': res['subject']}
-            
             final_rows = [['q', 'correct', 'wrong', 'rank', 'subject']]
             for v in current_data.values(): final_rows.append([v['q'], v['correct'], v['wrong'], v['rank'], v['subject']])
             sheet.update('A1', final_rows)
 
-            # 2. 教科別最高記録の更新
             sum_sh = ss.worksheet("summary")
-            sum_data = sum_sh.get_all_records()
-            streak_dict = {row['key']: row for row in sum_data}
-            
-            # 今回の教科名
             key_name = f"max_streak_{st.session_state.mode}"
             new_val = st.session_state.session_max_streak
-            
-            if key_name in streak_dict:
-                if new_val > int(streak_dict[key_name]['value']):
-                    cell = sum_sh.find(key_name)
-                    sum_sh.update_cell(cell.row, 2, new_val)
-            else:
-                sum_sh.append_row([key_name, new_val])
+            found = False
+            for i, row in enumerate(sum_sh.get_all_values()):
+                if row[0] == key_name:
+                    if new_val > int(row[1]): sum_sh.update_cell(i+1, 2, new_val)
+                    found = True; break
+            if not found: sum_sh.append_row([key_name, new_val])
             
             st.session_state.pending_results = []
             st.cache_data.clear()
-        except: st.error("保存中にエラーが発生しました。")
+        except: st.error("保存エラー")
 
 def setup_audio_engine():
     base_dir = os.path.dirname(os.path.abspath(__file__))
     c_p, w_p = os.path.join(base_dir, "correct.mp3"), os.path.join(base_dir, "wrong.mp3")
     c_b64 = base64.b64encode(open(c_p, "rb").read()).decode() if os.path.exists(c_p) else ""
     w_b64 = base64.b64encode(open(w_p, "rb").read()).decode() if os.path.exists(w_p) else ""
-    # ★ 音声を即時再生するためのJS
     st.components.v1.html(f"""<script>
         window.parent.playJudge = function(isCorrect) {{
             var audio = new Audio(isCorrect ? "data:audio/mp3;base64,{c_b64}" : "data:audio/mp3;base64,{w_b64}");
-            audio.play();
-        }};
+            audio.play(); }};
     </script>""", height=0)
 
 def parse_q_display(text):
@@ -127,28 +111,27 @@ setup_audio_engine()
 # --- 2. サイドバー ---
 with st.sidebar:
     st.title("📊 学習記録")
-    if st.button("🔄 最新データに更新", use_container_width=True):
+    if st.button("🔄 データを更新", use_container_width=True):
         st.cache_data.clear(); st.session_state.clear(); st.rerun()
 
     stats = load_all_stats_with_records()
-    hist = stats["history"]; streak_records = stats["streaks"]
+    hist = stats["history"]; streaks = stats["streaks"]
 
     if 'mode' in st.session_state:
         st.success(f"🔥 今日の連勝: {st.session_state.session_streak}")
-        rec = streak_records.get(f"max_streak_{st.session_state.mode}", 0)
+        rec = streaks.get(f"max_streak_{st.session_state.mode}", 0)
         st.warning(f"👑 歴代最高: {max(rec, st.session_state.session_max_streak)}")
         st.divider()
 
-    if hist:
-        st.write("**教科別の歴代最高記録**")
-        for k, v in streak_records.items():
-            if "max_streak_" in k:
-                st.caption(f"{k.replace('max_streak_', '')}: {v}連勝")
-        st.divider()
+    st.write("**教科別の歴代記録**")
+    for k, v in streaks.items():
+        if "max_streak_" in k:
+            st.caption(f"{k.replace('max_streak_', '')}: {v}連勝")
+    st.divider()
 
     st.write("<br>" * 10, unsafe_allow_html=True)
     if st.checkbox("⚙️ メンテナンス", value=False):
-        # (修正機能はVer.151と同じため省略)
+        # (修正機能はVer.152と同じ)
         pass
 
 # --- 3. メイン画面 ---
@@ -176,14 +159,14 @@ else:
     total_q = len(st.session_state.questions)
     if st.session_state.index >= total_q:
         sync_results_to_gsheet()
-        st.balloons(); st.success("特訓終了！すべての記録を保存しました。")
+        st.balloons(); st.success("特訓終了！保存しました。")
         if st.button("TOPへ戻る"): st.session_state.clear(); st.rerun()
     else:
         q = st.session_state.questions[st.session_state.index]; is_order_q = "/" in q['q']
         if st.session_state.show_result:
             if st.session_state.last_is_correct:
-                st.success("⭕ 正解！")
-                time.sleep(1.0); st.session_state.index += 1; st.session_state.show_result = False; st.session_state.show_options = False; st.session_state.user_ans_list = []; st.rerun()
+                st.success("⭕ 正解！"); time.sleep(1.0)
+                st.session_state.index += 1; st.session_state.show_result = False; st.session_state.show_options = False; st.session_state.user_ans_list = []; st.rerun()
             else:
                 st.error(f"❌ 正解は: {q['a']}")
                 if st.button("次へ ➡️"):
@@ -198,14 +181,17 @@ else:
             with c1:
                 if not st.session_state.show_options:
                     if st.button("🔍 判定して選択肢を表示", use_container_width=True):
-                        st.session_state.show_options = True; st.rerun()
+                        # ★ 改良：手書きがない場合は選択肢を出さない
+                        if not is_order_q and (not canvas_res.json_data or len(canvas_res.json_data.get("objects", [])) == 0):
+                            st.error("☝️ 画面に答えを書いてから判定してね！")
+                        else:
+                            st.session_state.show_options = True; st.rerun()
             with c2:
                 if st.button("🏳️ 中止して保存", use_container_width=True):
                     sync_results_to_gsheet(); st.session_state.clear(); st.rerun()
 
             if st.session_state.show_options:
                 st.divider()
-                # (判定部はVer.151と同じ。is_ok判定の後に playJudge 呼び出しを追加)
                 if is_order_q:
                     words = [w.strip() for w in main_p.replace("(","").replace(")","").replace("?","").replace(".","").split("/") if w.strip()]
                     current = st.session_state.user_ans_list; disp = [w for w in words if w not in current]
@@ -216,7 +202,6 @@ else:
                     if len(current) == len(words):
                         is_ok = " ".join(current).lower() == q['a'].lower()
                         st.session_state.pending_results.append({'q': q['q'], 'is_ok': is_ok, 'rank': q.get('rank','A'), 'subject': st.session_state.mode})
-                        # ★ 音声を鳴らす
                         st.components.v1.html(f"<script>window.parent.playJudge({str(is_ok).lower()});</script>", height=0)
                         if is_ok:
                             st.session_state.session_streak += 1
@@ -232,7 +217,6 @@ else:
                         if cols[i].button(opt, key=f"o_{i}", use_container_width=True):
                             is_ok = (opt.lower() == str(q['a']).lower())
                             st.session_state.pending_results.append({'q': q['q'], 'is_ok': is_ok, 'rank': q.get('rank','A'), 'subject': st.session_state.mode})
-                            # ★ 音声を鳴らす
                             st.components.v1.html(f"<script>window.parent.playJudge({str(is_ok).lower()});</script>", height=0)
                             if is_ok:
                                 st.session_state.session_streak += 1
