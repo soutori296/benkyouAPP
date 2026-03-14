@@ -3,7 +3,7 @@ import streamlit as st
 st.set_page_config(
     page_title="高校受験対策", 
     layout="wide", 
-    initial_sidebar_state="expanded"  # 強制的に開いた状態で起動
+    initial_sidebar_state="expanded"
 )
 
 from streamlit_drawable_canvas import st_canvas
@@ -162,20 +162,23 @@ for k, v in {"user_ans_list": [], "show_options": False, "show_result": False, "
 
 setup_audio()
 
-# デザイン調整 (トラブル回避のため、ツールバー隠蔽は一旦オフにします)
+# デザイン調整 (欠けを防止するために padding を 3rem に増やします)
 st.markdown("""
     <style>
-    .block-container {padding-top: 1rem;}
+    .block-container {padding-top: 3rem;}
+    /* ツールバーを隠すとサイドバーボタンも消えやすいため、一旦オフにします */
     /* [data-testid="stToolbar"] {visibility: hidden;} */
     </style>
     """, unsafe_allow_html=True)
+
+# どの画面でも一番上にタイトルを表示
+st.title("🛡️ 高校受験対策")
 
 # --- 4. サイドバー ---
 with st.sidebar:
     st.title("📊 学習記録")
     if st.button("🔄 最新データに更新", use_container_width=True): 
         st.cache_data.clear()
-        # st.session_state.clear() ではなく、必要なものだけ消す方が安全な場合があります
         for key in list(st.session_state.keys()): del st.session_state[key]
         st.rerun()
     
@@ -187,7 +190,6 @@ with st.sidebar:
         
         if st.button("🏳️ 中止保存", use_container_width=True):
             sync_results_to_gsheet()
-            # 状態をクリアしてTOPへ
             for key in list(st.session_state.keys()): del st.session_state[key]
             st.rerun()
     
@@ -221,9 +223,11 @@ with st.sidebar:
                         if update_question_in_gsheet(target['cat'], target['q'], new_q, new_a):
                             st.success("保存完了！"); st.cache_data.clear(); time.sleep(1); st.rerun()
 
+    st.divider(); st.write("<br>" * 10, unsafe_allow_html=True)
+
 # --- 5. メイン画面 ---
 if 'mode' not in st.session_state:
-    st.title("🛡️ 高校受験対策"); all_q = load_questions_from_gsheet()
+    all_q = load_questions_from_gsheet()
     if all_q:
         raw_keys = list(all_q.keys())
         special_options = ["英語 (1・2年合同)", "数学 (1・2年合同)"]
