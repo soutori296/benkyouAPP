@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 import gspread
 from google.oauth2.service_account import Credentials
 
-# --- 1. 基本設定・連携準備 ---
+# --- 1. 基本設定 ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 QUESTIONS_FILE = os.path.join(BASE_DIR, "questions.json")
 STATS_FILE = os.path.join(BASE_DIR, "study_stats.json")
@@ -16,21 +16,17 @@ def get_gsheet_client():
             scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
             creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
             return gspread.authorize(creds)
-        except Exception as e:
-            st.error(f"認証エラー: {e}")
+        except: return None
     return None
 
-# ★ 改良：最新データの強制読み込み
-def load_all_stats():
+# ★ 改良：キャッシュを導入してAPI制限を回避
+@st.cache_data(ttl=300) # 5分間は同じデータを使う
+def load_all_stats_cached():
     client = get_gsheet_client()
     if client:
         try:
             sh = client.open("study_stats_db").sheet1
             data = sh.get_all_records()
-            if not data:
-                return {"history": {}}
-            
-            # 各列のデータを数値として確実に処理
             history = {}
             for row in data:
                 q_text = str(row.get('q', ''))
@@ -43,11 +39,9 @@ def load_all_stats():
                     }
             return {"history": history}
         except Exception as e:
-            st.sidebar.warning(f"読込中... ({e})")
+            if "429" in str(e):
+                st.error("⚠️ Googleの制限がかかりました。1分ほど待ってから更新してください。")
             return {"history": {}}
-    
-    if os.path.exists(STATS_FILE):
-        with open(STATS_FILE, "r", encoding="utf-8") as f: return json.load(f)
     return {"history": {}}
 
 def save_stat(q_text, is_correct, rank, subject):
@@ -64,9 +58,13 @@ def save_stat(q_text, is_correct, rank, subject):
                 sh.update_cell(row, 3, w_val)
             else:
                 sh.append_row([q_text, 1 if is_correct else 0, 0 if is_correct else 1, rank, subject])
+            # 保存後はキャッシュを消さない（読み込みは5分おきでOK、書き込みは都度行う）
         except: pass
     else:
-        data = load_all_stats()
+        # ローカルPC用
+        if not os.path.exists(STATS_FILE): data = {"history": {}}
+        else:
+            with open(STATS_FILE, "r", encoding="utf-8") as f: data = json.load(f)
         if q_text not in data["history"]: data["history"][q_text] = {"correct": 0, "wrong": 0, "rank": rank, "subject": subject}
         if is_correct: data["history"][q_text]["correct"] += 1
         else: data["history"][q_text]["wrong"] += 1
@@ -98,12 +96,11 @@ setup_audio_engine()
 # --- 2. サイドバー ---
 with st.sidebar:
     st.title("📊 学習記録")
-    # ★ 強制リロードボタン
-    if st.button("🔄 データを更新する", use_container_width=True):
-        st.cache_data.clear()
+    if st.button("🔄 最新データに更新", use_container_width=True):
+        st.cache_data.clear() # キャッシュを消して強制読み込み
         st.rerun()
 
-    stats_data = load_all_stats()
+    stats_data = load_all_stats_cached()
     hist = stats_data.get("history", {})
     
     if hist:
@@ -116,7 +113,7 @@ with st.sidebar:
             st.write(f"**{sub}**: {rate}点 ({total_t}回)")
             st.progress(rate / 100)
     else:
-        st.write("スプレッドシートからデータを読み込んでいます...")
+        st.write("待機中...")
 
     if 'mode' in st.session_state:
         st.divider()
@@ -136,17 +133,15 @@ if 'mode' not in st.session_state:
             elif "Rank" in diff:
                 t = diff.split("Rank ")[1][0]; filtered = [q for q in data if q.get("rank") == t]
             elif "苦手克服" in diff:
-                # ★ スプレッドシートからミスの多い問題を抽出
                 wrong_list = [q_t for q_t, v in hist.items() if v.get("wrong", 0) > 0]
                 filtered = [q for q in data if q['q'] in wrong_list]
-                if not filtered: st.warning("まだ苦手な問題が登録されていません！"); filtered = data
+                if not filtered: st.warning("まだ苦手な問題がありません。ミックスで開始。"); filtered = data
             else: filtered = data
-            
             random.shuffle(filtered); st.session_state.questions = filtered[:50]
             st.session_state.index, st.session_state.score, st.session_state.session_streak = 0, 0, 0
             st.session_state.show_result = False; st.rerun()
 else:
-    # (以下、クイズ進行ロジックはVer.136と同じ)
+    # クイズ進行ロジック
     total_q = len(st.session_state.questions)
     if st.session_state.index >= total_q:
         st.balloons(); st.success("特訓終了！"); 
