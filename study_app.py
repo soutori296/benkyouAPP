@@ -18,13 +18,18 @@ def get_gsheet_client():
         except: return None
     return None
 
-# ★ 改良：エラー状態をキャッシュせず、原因を表示できるように修正
-@st.cache_data(ttl=300, show_spinner="スプレッドシートから取得中...")
+# ★ 改良：見出し(ヘッダー)を自動作成し、読み取りを安定させる
+@st.cache_data(ttl=300, show_spinner="データを読み込んでいます...")
 def load_all_stats_cached():
     client = get_gsheet_client()
     if not client: return {"history": {}, "status": "no_client"}
     try:
         sh = client.open("study_stats_db").sheet1
+        # 1行目が空なら見出しを挿入
+        if not sh.cell(1, 1).value:
+            sh.insert_row(["q", "correct", "wrong", "rank", "subject"], 1)
+            return {"history": {}, "status": "ok"}
+            
         data = sh.get_all_records()
         history = {}
         for row in data:
@@ -38,7 +43,6 @@ def load_all_stats_cached():
                 }
         return {"history": history, "status": "ok"}
     except Exception as e:
-        # エラー時はキャッシュせず、現在のエラーを返す
         return {"history": {}, "status": "error", "message": str(e)}
 
 def save_stat(q_text, is_correct, rank, subject):
@@ -46,6 +50,10 @@ def save_stat(q_text, is_correct, rank, subject):
     if client:
         try:
             sh = client.open("study_stats_db").sheet1
+            # 保存前にも見出しチェック
+            if not sh.cell(1, 1).value:
+                sh.insert_row(["q", "correct", "wrong", "rank", "subject"], 1)
+            
             cell = sh.find(q_text)
             if cell:
                 row = cell.row
@@ -80,7 +88,6 @@ for k, v in {"user_ans_list": [], "show_options": False, "show_result": False,
 st.set_page_config(page_title="70点マスター", layout="centered")
 setup_audio_engine()
 
-# --- 2. サイドバー ---
 with st.sidebar:
     st.title("📊 学習記録")
     if st.button("🔄 最新データに更新", use_container_width=True):
@@ -101,18 +108,16 @@ with st.sidebar:
                 st.write(f"**{sub}**: {rate}点 ({total_t}回)")
                 st.progress(rate / 100)
         else:
-            st.warning("スプレッドシートにデータがありません。1問解いてみましょう！")
+            st.info("💡 1問解くと、ここに成績が表示されます！")
     elif res["status"] == "error":
         st.error(f"⚠️ 読み込みエラー: {res.get('message')}")
-    else:
-        st.write("待機中...")
 
     if 'mode' in st.session_state:
         st.divider()
         st.success(f"⚔️ **{st.session_state.session_streak}** 連勝中！")
         if st.button("🔴 中止"): st.session_state.clear(); st.rerun()
 
-# --- 3. メイン画面（以下省略、Ver.138と同じ） ---
+# --- 3. メイン画面 ---
 if 'mode' not in st.session_state:
     st.title("🛡️ yoshi式・70点奪取特訓")
     if os.path.exists(QUESTIONS_FILE):
@@ -127,7 +132,7 @@ if 'mode' not in st.session_state:
             elif "苦手克服" in diff:
                 wrong_list = [q_t for q_t, v in hist.items() if v.get("wrong", 0) > 0]
                 filtered = [q for q in data if q['q'] in wrong_list]
-                if not filtered: st.warning("苦手な問題がありません。ミックスで開始。"); filtered = data
+                if not filtered: st.warning("まだ苦手な問題がありません。ミックスで開始。"); filtered = data
             else: filtered = data
             random.shuffle(filtered); st.session_state.questions = filtered[:50]
             st.session_state.index, st.session_state.score, st.session_state.session_streak = 0, 0, 0
