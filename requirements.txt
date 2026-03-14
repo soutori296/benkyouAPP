@@ -1,4 +1,5 @@
 streamlit
 streamlit-drawable-canvas
 gspread
-google-auth
+google-api-python-client
+Pillow
