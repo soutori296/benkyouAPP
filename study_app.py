@@ -1,0 +1,201 @@
+import streamlit as st
+from streamlit_drawable_canvas import st_canvas
+import json, os, random, time, base64, re
+from datetime import datetime, timedelta
+
+# --- 1. 基本設定 ---
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+STATS_FILE = os.path.join(BASE_DIR, "study_stats.json")
+QUESTIONS_FILE = os.path.join(BASE_DIR, "questions.json")
+
+for k, v in {"user_ans_list": [], "show_options": False, "show_result": False, 
+             "last_is_correct": False, "score": 0, "index": 0, "session_streak": 0}.items():
+    if k not in st.session_state: st.session_state[k] = v
+
+def setup_audio_engine():
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    c_p, w_p = os.path.join(base_dir, "correct.mp3"), os.path.join(base_dir, "wrong.mp3")
+    c_b64 = base64.b64encode(open(c_p, "rb").read()).decode() if os.path.exists(c_p) else ""
+    w_b64 = base64.b64encode(open(w_p, "rb").read()).decode() if os.path.exists(w_p) else ""
+    st.components.v1.html(f"""<script>window.parent.playJudge = function(isCorrect) {{
+        var s = isCorrect ? "data:audio/mp3;base64,{c_b64}" : "data:audio/mp3;base64,{w_b64}";
+        new Audio(s).play().catch(e => console.log(e)); }};</script>""", height=0)
+
+def save_stat(q_text, is_correct, rank, subject, is_weak_mode=False):
+    now = datetime.now(); today = now.strftime("%Y-%m-%d")
+    data = {"history": {}, "streak": 0, "last_date": ""}
+    if os.path.exists(STATS_FILE):
+        try:
+            with open(STATS_FILE, "r", encoding="utf-8") as f:
+                d = json.load(f); data = d if "history" in d else {"history": d, "streak": 0, "last_date": ""}
+        except: pass
+    if q_text not in data["history"]: data["history"][q_text] = {"correct": 0, "wrong": 0, "rank": rank, "subject": subject, "mastery": 0}
+    q_data = data["history"][q_text]
+    if is_weak_mode:
+        if is_correct:
+            q_data["mastery"] = q_data.get("mastery", 0) + 1
+            if q_data["mastery"] >= 10: q_data["wrong"], q_data["mastery"] = 0, 0
+        else: q_data["mastery"] = 0
+    else:
+        if is_correct: q_data["correct"] += 1
+        else: q_data["wrong"] += 1
+    if data.get("last_date") != today:
+        data["streak"] = data.get("streak", 0) + 1 if data.get("last_date") == (now - timedelta(days=1)).strftime("%Y-%m-%d") else 1
+        data["last_date"] = today
+    with open(STATS_FILE, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False)
+
+def get_subject_stats():
+    if not os.path.exists(STATS_FILE): return {}
+    try:
+        with open(STATS_FILE, "r", encoding="utf-8") as f:
+            hist = json.load(f).get("history", {})
+            return {s: {"total": sum((v["correct"] + v["wrong"]) for q, v in hist.items() if v.get("subject") == s),
+                        "correct": sum(v["correct"] for q, v in hist.items() if v.get("subject") == s)}
+                    for s in set(v.get("subject", "不明") for v in hist.values())}
+    except: return {}
+
+# ★ 最強の分割ロジック：数式・英語と日本語を賢く分ける
+def parse_q_display(text):
+    # 文末の日本語部分（和訳・指示）を特定
+    match = re.search(r'\s+([ぁ-んァ-ヶ一-龠].*)$', text)
+    if match:
+        main_part = text[:match.start()].strip()
+        sub_part = match.group(1).strip()
+        # メインが空（日本語のみ）でなければ分割
+        if main_part: return main_part, sub_part
+    return text, ""
+
+st.set_page_config(page_title="70点マスター", layout="centered")
+setup_audio_engine()
+
+# --- 2. サイドバー ---
+with st.sidebar:
+    streak_val = 0
+    if os.path.exists(STATS_FILE):
+        try:
+            with open(STATS_FILE, "r", encoding="utf-8") as f: streak_val = json.load(f).get("streak", 0)
+        except: pass
+    st.info(f"🔥 現在 **{streak_val}** 日連続特訓中！")
+    if 'mode' in st.session_state:
+        st.success(f"⚔️ **{st.session_state.session_streak}** 連勝中！")
+        if st.button("🔴 中止"): st.session_state.clear(); st.rerun()
+    st.divider()
+    all_stats = get_subject_stats(); current_sub = st.session_state.get('mode')
+    for sub_name, s in sorted(all_stats.items()):
+        rate = int(s["correct"] / s["total"] * 100) if s["total"] > 0 else 0
+        st.write(f"**{'⭐ ' if sub_name == current_sub else ''}{sub_name}**: {rate}点 ({s['total']}回)")
+        st.progress(rate / 100)
+
+# --- 3. メイン画面 ---
+if 'mode' not in st.session_state:
+    st.title("🛡️ yoshi式・70点奪取特訓")
+    if os.path.exists(QUESTIONS_FILE):
+        with open(QUESTIONS_FILE, "r", encoding="utf-8") as f: all_q = json.load(f)
+        sub = st.selectbox("特訓セットを選択", list(all_q.keys()))
+        diff = st.radio("モード選択", ["ミックス", "🧩 並べ替え特訓", "基礎(Rank A)", "標準(Rank B)", "難問(Rank C)", "🔥 苦手克服"], horizontal=True)
+        if st.button("特訓開始！", use_container_width=True):
+            st.session_state.mode = sub; st.session_state.diff_label = diff; data = all_q.get(sub, [])
+            if "並べ替え" in diff: filtered = [q for q in data if "/" in q['q']]
+            elif "Rank" in diff:
+                t = diff.split("Rank ")[1][0]; filtered = [q for q in data if q.get("rank") == t]
+            elif "苦手克服" in diff:
+                if os.path.exists(STATS_FILE):
+                    with open(STATS_FILE, "r", encoding="utf-8") as f: hist = json.load(f).get("history", {})
+                    filtered = [q for q in data if q['q'] in [k for k, v in hist.items() if v.get("wrong", 0) > 0]]
+                else: filtered = []
+            else: filtered = data
+            if not filtered: st.warning("全問題で開始。"); filtered = data
+            random.shuffle(filtered); st.session_state.questions = filtered[:50]
+            st.session_state.index, st.session_state.score, st.session_streak = 0, 0, 0
+            st.session_state.show_result = False; st.rerun()
+else:
+    total_q = len(st.session_state.questions)
+    if st.session_state.index >= total_q:
+        st.balloons(); st.success("特訓終了！"); 
+        if st.button("TOPへ戻る"): st.session_state.clear(); st.rerun()
+    else:
+        q = st.session_state.questions[st.session_state.index]; is_order_q = "/" in q['q']
+        if st.session_state.show_result:
+            if st.session_state.last_is_correct:
+                st.success(f"⭕ 正解！ ({st.session_state.session_streak}連勝)")
+                time.sleep(1.2); st.session_state.index += 1; st.session_state.show_result = False
+                st.session_state.show_options = False; st.session_state.user_ans_list = []; st.rerun()
+            else:
+                st.error(f"❌ 正解は: {q['a']}")
+                if st.button("次へ ➡️"):
+                    st.session_state.index += 1; st.session_state.show_result = False
+                    st.session_state.show_options = False; st.session_state.user_ans_list = []; st.rerun()
+        else:
+            st.write(f"残り {total_q - st.session_state.index} 問")
+            main_p, hint_p = parse_q_display(q['q'])
+            st.subheader(main_p)
+            if hint_p: st.info(f"💡 {hint_p}")
+            canvas_res = st_canvas(stroke_width=9, height=180, width=700, key=f"c_{st.session_state.index}")
+            
+            if not st.session_state.show_options:
+                if st.button("🔍 判定して選択肢を表示", use_container_width=True):
+                    if not is_order_q and (not canvas_res.json_data or len(canvas_res.json_data.get("objects", [])) == 0):
+                        st.warning("⚠️ 手書きで解答を書いてください！")
+                    else: st.session_state.show_options = True; st.rerun()
+            else:
+                with st.expander("📝 修正"):
+                    new_q = st.text_input("問題", value=q['q']); new_a = st.text_input("正解", value=q['a'])
+                    if st.button("保存"):
+                        with open(QUESTIONS_FILE, "r", encoding="utf-8") as f: all_q_f = json.load(f)
+                        for k in all_q_f:
+                            for i in all_q_f[k]:
+                                if i['q'] == q['q']: i['q'], i['a'] = new_q, new_a; break
+                        with open(QUESTIONS_FILE, "w", encoding="utf-8") as f: json.dump(all_q_f, f, ensure_ascii=False, indent=2)
+                        st.success("完了"); time.sleep(0.5); st.rerun()
+                st.divider()
+                if is_order_q:
+                    words = [w.strip() for w in main_p.replace("(","").replace(")","").replace("?","").replace(".","").split("/") if w.strip()]
+                    current = st.session_state.user_ans_list; disp = [w for w in words if w not in current]
+                    if disp:
+                        cols = st.columns(min(len(disp), 5))
+                        for i, w in enumerate(disp):
+                            if cols[i % 5].button(w, key=f"w_{i}", use_container_width=True): st.session_state.user_ans_list.append(w); st.rerun()
+                    if current:
+                        st.write(f"解答: {' '.join(current)}")
+                        if st.button("🗑️ やり直す"): st.session_state.user_ans_list = []; st.session_state.show_options = False; st.rerun()
+                        if len(current) == len(words):
+                            is_ok = " ".join(current).lower() == q['a'].lower()
+                            save_stat(q['q'], is_ok, q.get("rank", "A"), st.session_state.mode, "苦手" in st.session_state.diff_label)
+                            st.components.v1.html(f"<script>window.parent.playJudge({str(is_ok).lower()});</script>", height=0)
+                            st.session_state.last_is_correct = is_ok
+                            if is_ok: st.session_state.score += 1; st.session_state.session_streak += 1
+                            else: st.session_state.session_streak = 0
+                            time.sleep(0.5); st.session_state.show_result = True; st.rerun()
+                else:
+                    if 'cur_opts' not in st.session_state or st.session_state.get('last_q_id') != st.session_state.index:
+                        correct_ans = str(q['a']); opts_set = {correct_ans}; pool = []
+                        if "数学" in st.session_state.mode:
+                            match = re.search(r"(-?\d*)([xyabπ]+.*)", correct_ans)
+                            if match:
+                                c_s, var = match.groups(); coef = 1 if c_s == "" else (-1 if c_s == "-" else int(c_s))
+                                pool = [f"{coef+1}{var}", f"{coef-1}{var}", f"{-coef}{var}", "0"]
+                            else:
+                                try: v = int(correct_ans); pool = [str(-v), str(v+1), str(v-1), "0"]
+                                except: pool = ["x", "y", "a", "b", "0"]
+                        else:
+                            D_GRPS = [["is", "am", "are", "was", "were"], ["I", "my", "me", "mine", "you", "your", "he", "his", "she", "her"], ["in", "at", "on", "to", "for"]]
+                            for g in D_GRPS:
+                                if correct_ans in g: pool = [w for w in g if w != correct_ans]; break
+                            if len(pool) < 3: pool.extend(["the", "it", "a", "of"])
+                        random.shuffle(pool)
+                        for p in pool:
+                            if len(opts_set) >= 4: break
+                            if p != correct_ans: opts_set.add(p)
+                        while len(opts_set) < 4: opts_set.add(str(random.randint(0, 10)) if "数学" in st.session_state.mode else "it")
+                        st.session_state.cur_opts = random.sample(list(opts_set), len(opts_set)); st.session_state.last_q_id = st.session_state.index
+                    cols = st.columns(4)
+                    for i, opt in enumerate(st.session_state.cur_opts):
+                        if cols[i].button(opt, key=f"o_{i}", use_container_width=True):
+                            is_ok = (opt.lower() == str(q['a']).lower())
+                            save_stat(q['q'], is_ok, q.get("rank", "A"), st.session_state.mode, "苦手" in st.session_state.diff_label)
+                            st.components.v1.html(f"<script>window.parent.playJudge({str(is_ok).lower()});</script>", height=0)
+                            st.session_state.last_is_correct = is_ok
+                            if is_ok: st.session_state.score += 1; st.session_state.session_streak += 1
+                            else: st.session_state.session_streak = 0
+                            time.sleep(0.5); st.session_state.show_result = True; st.rerun()
+                    if st.button("🗑️ やり直す"): st.session_state.show_options = False; st.rerun()
