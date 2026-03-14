@@ -38,7 +38,6 @@ def load_all_stats_with_records():
         ss = client.open("study_stats_db")
         hist_data = ss.sheet1.get_all_records()
         history = {str(row['q']): {"correct": int(row['correct'] or 0), "wrong": int(row['wrong'] or 0), "subject": str(row.get('subject', '不明'))} for row in hist_data if row.get('q')}
-        
         streaks = {}
         try:
             sum_sh = ss.worksheet("summary")
@@ -68,7 +67,6 @@ def sync_results_to_gsheet():
             final_rows = [['q', 'correct', 'wrong', 'rank', 'subject']]
             for v in current_data.values(): final_rows.append([v['q'], v['correct'], v['wrong'], v['rank'], v['subject']])
             sheet.update('A1', final_rows)
-
             sum_sh = ss.worksheet("summary")
             key_name = f"max_streak_{st.session_state.mode}"
             new_val = st.session_state.session_max_streak
@@ -78,21 +76,18 @@ def sync_results_to_gsheet():
                     if new_val > int(row[1]): sum_sh.update_cell(i+1, 2, new_val)
                     found = True; break
             if not found: sum_sh.append_row([key_name, new_val])
-            
             st.session_state.pending_results = []
             st.cache_data.clear()
-        except: st.error("保存エラー")
+        except: st.error("保存失敗")
 
 def setup_audio_engine():
     base_dir = os.path.dirname(os.path.abspath(__file__))
     c_p, w_p = os.path.join(base_dir, "correct.mp3"), os.path.join(base_dir, "wrong.mp3")
     c_b64 = base64.b64encode(open(c_p, "rb").read()).decode() if os.path.exists(c_p) else ""
     w_b64 = base64.b64encode(open(w_p, "rb").read()).decode() if os.path.exists(w_p) else ""
-    st.components.v1.html(f"""<script>
-        window.parent.playJudge = function(isCorrect) {{
-            var audio = new Audio(isCorrect ? "data:audio/mp3;base64,{c_b64}" : "data:audio/mp3;base64,{w_b64}");
-            audio.play(); }};
-    </script>""", height=0)
+    st.components.v1.html(f"""<script>window.parent.playJudge = function(isCorrect) {{
+        var audio = new Audio(isCorrect ? "data:audio/mp3;base64,{c_b64}" : "data:audio/mp3;base64,{w_b64}");
+        audio.play(); }};</script>""", height=0)
 
 def parse_q_display(text):
     match = re.search(r'\s+([ぁ-んァ-ヶ一-龠].*)$', text)
@@ -113,26 +108,20 @@ with st.sidebar:
     st.title("📊 学習記録")
     if st.button("🔄 データを更新", use_container_width=True):
         st.cache_data.clear(); st.session_state.clear(); st.rerun()
-
     stats = load_all_stats_with_records()
     hist = stats["history"]; streaks = stats["streaks"]
-
     if 'mode' in st.session_state:
         st.success(f"🔥 今日の連勝: {st.session_state.session_streak}")
         rec = streaks.get(f"max_streak_{st.session_state.mode}", 0)
         st.warning(f"👑 歴代最高: {max(rec, st.session_state.session_max_streak)}")
         st.divider()
-
     st.write("**教科別の歴代記録**")
     for k, v in streaks.items():
-        if "max_streak_" in k:
-            st.caption(f"{k.replace('max_streak_', '')}: {v}連勝")
+        if "max_streak_" in k: st.caption(f"{k.replace('max_streak_', '')}: {v}連勝")
     st.divider()
-
-    st.write("<br>" * 10, unsafe_allow_html=True)
+    st.write("<br>" * 15, unsafe_allow_html=True)
     if st.checkbox("⚙️ メンテナンス", value=False):
-        # (修正機能はVer.152と同じ)
-        pass
+        pass # (修正機能はVer.152と同じ)
 
 # --- 3. メイン画面 ---
 if 'mode' not in st.session_state:
@@ -158,8 +147,7 @@ if 'mode' not in st.session_state:
 else:
     total_q = len(st.session_state.questions)
     if st.session_state.index >= total_q:
-        sync_results_to_gsheet()
-        st.balloons(); st.success("特訓終了！保存しました。")
+        sync_results_to_gsheet(); st.balloons(); st.success("特訓終了！保存しました。")
         if st.button("TOPへ戻る"): st.session_state.clear(); st.rerun()
     else:
         q = st.session_state.questions[st.session_state.index]; is_order_q = "/" in q['q']
@@ -176,16 +164,14 @@ else:
             main_p, hint_p = parse_q_display(q['q']); st.subheader(main_p)
             if hint_p: st.info(f"💡 {hint_p}")
             canvas_res = st_canvas(stroke_width=9, height=180, width=700, key=f"c_{st.session_state.index}")
-            
             c1, c2 = st.columns(2)
             with c1:
                 if not st.session_state.show_options:
                     if st.button("🔍 判定して選択肢を表示", use_container_width=True):
-                        # ★ 改良：手書きがない場合は選択肢を出さない
+                        # 手書きがない場合は警告
                         if not is_order_q and (not canvas_res.json_data or len(canvas_res.json_data.get("objects", [])) == 0):
                             st.error("☝️ 画面に答えを書いてから判定してね！")
-                        else:
-                            st.session_state.show_options = True; st.rerun()
+                        else: st.session_state.show_options = True; st.rerun()
             with c2:
                 if st.button("🏳️ 中止して保存", use_container_width=True):
                     sync_results_to_gsheet(); st.session_state.clear(); st.rerun()
@@ -199,15 +185,27 @@ else:
                         cols = st.columns(min(len(disp), 5))
                         for i, w in enumerate(disp):
                             if cols[i % 5].button(w, key=f"w_{i}", use_container_width=True): st.session_state.user_ans_list.append(w); st.rerun()
-                    if len(current) == len(words):
-                        is_ok = " ".join(current).lower() == q['a'].lower()
-                        st.session_state.pending_results.append({'q': q['q'], 'is_ok': is_ok, 'rank': q.get('rank','A'), 'subject': st.session_state.mode})
-                        st.components.v1.html(f"<script>window.parent.playJudge({str(is_ok).lower()});</script>", height=0)
-                        if is_ok:
-                            st.session_state.session_streak += 1
-                            st.session_state.session_max_streak = max(st.session_state.session_max_streak, st.session_state.session_streak)
-                        else: st.session_state.session_streak = 0
-                        st.session_state.last_is_correct = is_ok; time.sleep(0.5); st.session_state.show_result = True; st.rerun()
+                    if current:
+                        st.write(f"解答: {' '.join(current)}")
+                        
+                        # ★ 改良：戻すボタンと最初からボタンの配置
+                        bc1, bc2 = st.columns(2)
+                        with bc1:
+                            if st.button("⬅️ 1つ戻す", use_container_width=True):
+                                if st.session_state.user_ans_list: st.session_state.user_ans_list.pop(); st.rerun()
+                        with bc2:
+                            if st.button("🗑️ 最初から", use_container_width=True):
+                                st.session_state.user_ans_list = []; st.rerun()
+                        
+                        if len(current) == len(words):
+                            is_ok = " ".join(current).lower() == q['a'].lower()
+                            st.session_state.pending_results.append({'q': q['q'], 'is_ok': is_ok, 'rank': q.get('rank','A'), 'subject': st.session_state.mode})
+                            st.components.v1.html(f"<script>window.parent.playJudge({str(is_ok).lower()});</script>", height=0)
+                            if is_ok:
+                                st.session_state.session_streak += 1
+                                st.session_state.session_max_streak = max(st.session_state.session_max_streak, st.session_state.session_streak)
+                            else: st.session_state.session_streak = 0
+                            st.session_state.last_is_correct = is_ok; time.sleep(0.5); st.session_state.show_result = True; st.rerun()
                 else:
                     if 'cur_opts' not in st.session_state or st.session_state.get('last_q_id') != st.session_state.index:
                         opts = [q['a']] + random.sample([a for a in st.session_state.all_ans_in_set if a != q['a']], min(3, len(st.session_state.all_ans_in_set)-1))
