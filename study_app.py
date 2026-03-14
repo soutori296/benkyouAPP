@@ -1,4 +1,11 @@
 import streamlit as st
+# --- 1. st.set_page_config は必ず最初に配置 ---
+st.set_page_config(
+    page_title="高校受験対策", 
+    layout="wide", 
+    initial_sidebar_state="expanded"  # 強制的に開いた状態で起動
+)
+
 from streamlit_drawable_canvas import st_canvas
 import json, os, random, time, base64, re, io
 import pandas as pd
@@ -6,7 +13,7 @@ from datetime import datetime
 import gspread
 from google.oauth2.service_account import Credentials
 
-# --- 1. 基本設定・API連携 ---
+# --- 2. 基本設定・API連携 ---
 def get_creds():
     if "gcp_service_account" in st.secrets:
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
@@ -18,7 +25,7 @@ def format_math_text(text):
     text = text.replace('*', '×')
     text = text.replace('^2', '²').replace('^3', '³')
     return text
-    
+
 def is_too_easy_math(category, q_text):
     if "数学" not in category: return False
     if re.search(r'[xyabπ\^²³\(\)＝=]', q_text): return False
@@ -149,38 +156,39 @@ def parse_q_display(text):
         if m: return text[:m.start()].strip(), m.group(1).strip()
     return text, ""
 
-# セッション初期化
+# --- 3. セッション初期化 ---
 for k, v in {"user_ans_list": [], "show_options": False, "show_result": False, "index": 0, "session_streak": 0, "session_max_streak": 0, "pending_results": [], "p_edit_obj": None}.items():
     if k not in st.session_state: st.session_state[k] = v
 
-st.set_page_config(
-    page_title="高校受験対策", 
-    layout="wide", 
-    initial_sidebar_state="expanded"  # ← これを追加（強制展開）
-)
 setup_audio()
 
-# CSS修正：サイドバーを出すボタン(header内のボタン)を消さないように設定
+# デザイン調整 (トラブル回避のため、ツールバー隠蔽は一旦オフにします)
 st.markdown("""
     <style>
     .block-container {padding-top: 1rem;}
-    [data-testid="stToolbar"] {visibility: hidden;}
+    /* [data-testid="stToolbar"] {visibility: hidden;} */
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. サイドバー ---
+# --- 4. サイドバー ---
 with st.sidebar:
     st.title("📊 学習記録")
-    if st.button("🔄 最新データに更新", use_container_width=True): st.cache_data.clear(); st.session_state.clear(); st.rerun()
+    if st.button("🔄 最新データに更新", use_container_width=True): 
+        st.cache_data.clear()
+        # st.session_state.clear() ではなく、必要なものだけ消す方が安全な場合があります
+        for key in list(st.session_state.keys()): del st.session_state[key]
+        st.rerun()
+    
     stats_data = load_all_stats_with_records()
+    
     if 'mode' in st.session_state:
         st.success(f"🔥 今日の連勝: {st.session_state.session_streak}")
         st.warning(f"👑 歴代最高: {max(int(stats_data['streaks'].get(f'max_streak_{st.session_state.mode}', 0)), st.session_state.session_max_streak)}")
         
-        # 中止保存ボタンをこちらに配置
         if st.button("🏳️ 中止保存", use_container_width=True):
             sync_results_to_gsheet()
-            st.session_state.clear()
+            # 状態をクリアしてTOPへ
+            for key in list(st.session_state.keys()): del st.session_state[key]
             st.rerun()
     
     st.divider()
@@ -196,7 +204,7 @@ with st.sidebar:
             
             with p_tabs[1]:
                 all_q_edit = load_questions_from_gsheet()
-                src = st.text_input("🔍 問題を検索", placeholder="例: I have a pen")
+                src = st.text_input("🔍 問題を検索")
                 match = None
                 if src:
                     for c, items in all_q_edit.items():
@@ -204,23 +212,16 @@ with st.sidebar:
                             if src.lower() in i['q'].lower():
                                 match = {"cat": c, "q": i['q'], "a": i['a']}; break
                         if match: break
-                elif 'mode' in st.session_state and st.session_state.index < len(st.session_state.questions):
-                    cur = st.session_state.questions[st.session_state.index]
-                    match = {"cat": st.session_state.mode, "q": cur['q'], "a": cur['a']}
-                
                 st.session_state.p_edit_obj = match
                 target = st.session_state.p_edit_obj
-                if target: st.caption(f"対象教科: {target['cat']}")
-                new_q = st.text_input("問題文 (修正)", value=target['q'] if target else "")
-                new_a = st.text_input("正解 (修正)", value=target['a'] if target else "")
-                
-                if st.button("✅ 修正を保存", use_container_width=True) and target:
-                    if update_question_in_gsheet(target['cat'], target['q'], new_q, new_a):
-                        st.success("保存完了！"); st.cache_data.clear(); time.sleep(1); st.rerun()
+                if target:
+                    new_q = st.text_input("問題文 (修正)", value=target['q'])
+                    new_a = st.text_input("正解 (修正)", value=target['a'])
+                    if st.button("✅ 修正を保存"):
+                        if update_question_in_gsheet(target['cat'], target['q'], new_q, new_a):
+                            st.success("保存完了！"); st.cache_data.clear(); time.sleep(1); st.rerun()
 
-    st.divider(); st.write("<br>" * 10, unsafe_allow_html=True)
-
-# --- 3. メイン画面 ---
+# --- 5. メイン画面 ---
 if 'mode' not in st.session_state:
     st.title("🛡️ 高校受験対策"); all_q = load_questions_from_gsheet()
     if all_q:
@@ -239,8 +240,7 @@ if 'mode' not in st.session_state:
             elif "数学" in sub and "合同" in sub: target_cats = [k for k in raw_keys if "数学" in k]
             else: target_cats = [sub]
             
-            cat_groups = {}
-            total_ans_pool = []
+            cat_groups = {}; total_ans_pool = []
             for cat in target_cats:
                 data = all_q.get(cat, [])
                 total_ans_pool.extend([q['a'] for q in data])
@@ -269,7 +269,9 @@ else:
     total = len(st.session_state.questions)
     if st.session_state.index >= total:
         sync_results_to_gsheet(); st.balloons(); st.success("特訓終了！")
-        if st.button("TOPへ戻る"): st.session_state.clear(); st.rerun()
+        if st.button("TOPへ戻る"): 
+            for key in list(st.session_state.keys()): del st.session_state[key]
+            st.rerun()
     else:
         q = st.session_state.questions[st.session_state.index]; is_math = "数学" in q['orig_cat']
         is_order_q = ("/" in q['q']) and (" " in str(q['a']).strip())
@@ -310,19 +312,16 @@ else:
                         current = st.session_state.user_ans_list; disp = [w for w in words if w not in current]
                         if current: st.info(" ".join(current))
                         if disp:
-                            # 並べ替えの単語ボタンを1行にする
                             cols = st.columns(len(disp))
                             for i, w in enumerate(disp):
                                 if cols[i].button(w, key=f"w_{i}_{len(current)}", use_container_width=True):
                                     st.session_state.user_ans_list.append(w); st.rerun()
-                        
                         bc1, bc2 = st.columns(2)
                         with bc1:
                             if st.button("⬅️ 戻す", use_container_width=True):
                                 if st.session_state.user_ans_list: st.session_state.user_ans_list.pop(); st.rerun()
                         with bc2:
                             if st.button("🗑️ クリア", use_container_width=True): st.session_state.user_ans_list = []; st.rerun()
-                        
                         if len(current) == len(words):
                             is_ok = " ".join(current).lower() == q['a'].lower()
                             st.session_state.pending_results.append({'q': q['q'], 'is_ok': is_ok, 'rank': q.get('rank','A'), 'subject': q['orig_cat']})
@@ -335,7 +334,6 @@ else:
                             opts = [q['a']] + generate_clever_distractors(q['a'], q['orig_cat'], st.session_state.all_ans_in_set)
                             st.session_state.cur_opts = random.sample(list(set(opts)), len(list(set(opts)))); st.session_state.last_q_id = st.session_state.index
                         
-                        # 4択ボタンを1行にする
                         o_cols = st.columns(len(st.session_state.cur_opts))
                         for i, opt in enumerate(st.session_state.cur_opts):
                             with o_cols[i]:
