@@ -14,21 +14,20 @@ def get_creds():
     return None
 
 def format_math_text(text):
+    """Excelやボタンで読みやすい形式に整形する（HTMLタグは使わない）"""
     if not isinstance(text, str): return text
     # 記号の置換
     text = text.replace('*', '×').replace('/', '÷')
-    # 指数表示
-    if '^' in text: text = re.sub(r'(\w+)\^(\d+)', r'\1<sup>\2</sup>', text)
-    # 変数x, y, a, b を斜体にする (数式っぽく見せる)
-    text = re.sub(r'\b([xyab])\b', r'<i>\1</i>', text)
+    # 累乗を特殊文字に置換 (2乗, 3乗のみ対応)
+    text = text.replace('^2', '²').replace('^3', '³')
     return text
 
 def is_too_easy_math(category, q_text):
     if "数学" not in category: return False
-    # 文字や記号が含まれればOK
-    if re.search(r'[xyabπ\^\(\)＝=]', q_text): return False
-    # 単純な正の数の四則演算（例: 80/8, 11+9）を除外
-    if re.match(r'^\d+\s*[\+\-\*\/]\s*\d+\s*=$', q_text.strip()): return True
+    # 文字や特定の数学記号が含まれれば中学レベルと判定
+    if re.search(r'[xyabπ\^²³\(\)＝=]', q_text): return False
+    # 単純な正の数の四則演算（例: 80÷8, 11+9）を除外
+    if re.match(r'^\d+\s*[\+\-\*\/×÷]\s*\d+\s*=$', q_text.strip()): return True
     return False
 
 @st.cache_data(ttl=300)
@@ -125,12 +124,20 @@ def generate_clever_distractors(correct_ans, mode, all_ans):
     dists = set(); c_ans = str(correct_ans)
     if "数学" in mode:
         try:
+            # 数字のみの場合
             v = float(c_ans)
-            dists.add(str(int(v+1) if v.is_integer() else v+1)); dists.add(str(int(v-1) if v.is_integer() else v-1)); dists.add(str(int(-v) if v.is_integer() else -v))
+            dists.add(str(int(v+1) if v.is_integer() else v+1))
+            dists.add(str(int(v-1) if v.is_integer() else v-1))
+            dists.add(str(int(-v) if v.is_integer() else -v))
         except:
-            if "-" in c_ans: dists.add(c_ans.replace("-", ""))
-            else: dists.add("-" + c_ans)
-    pool = [str(a) for a in all_ans if abs(len(str(a)) - len(c_ans)) <= 2 and str(a).lower() != c_ans.lower()]
+            # 方程式などの場合
+            if "=" in c_ans:
+                var, val = c_ans.split("=")
+                try:
+                    v = int(val.strip())
+                    dists.add(f"{var}= {v+1}"); dists.add(f"{var}= {v-1}"); dists.add(f"{var}= {-v}")
+                except: pass
+    pool = [str(a) for a in all_ans if abs(len(str(a)) - len(c_ans)) <= 5 and str(a).lower() != c_ans.lower()]
     random.shuffle(pool)
     for c in pool:
         if len(dists) >= 3: break
@@ -148,7 +155,7 @@ def parse_q_display(text):
     if re.match(r'^[A-Za-z\s\(\)\.\,\?\!]+', text):
         m = re.search(r'\s+([ぁ-んァ-ヶ一-龠].*)$', text)
         if m: return text[:m.start()].strip(), m.group(1).strip()
-    return text, "" # 日本語開始の文章題などは分割しない
+    return text, ""
 
 # セッション初期化
 for k, v in {"user_ans_list": [], "show_options": False, "show_result": False, "index": 0, "session_streak": 0, "session_max_streak": 0, "pending_results": [], "p_edit_obj": None}.items():
@@ -180,7 +187,7 @@ with st.sidebar:
             
             with p_tabs[1]:
                 all_q_edit = load_questions_from_gsheet()
-                src = st.text_input("🔍 問題を検索 (キーワードを入れると自動セット)", placeholder="例: I have a pen")
+                src = st.text_input("🔍 問題を検索", placeholder="例: I have a pen")
                 match = None
                 if src:
                     for c, items in all_q_edit.items():
@@ -217,9 +224,7 @@ if 'mode' not in st.session_state:
         diff = st.radio("モード選択", ["ミックス", "🧩 並べ替え特訓", "🔥 苦手克服"], horizontal=True)
         
         if st.button("特訓開始！", use_container_width=True):
-            save_last_subject(sub)
-            st.session_state.mode = sub
-            
+            save_last_subject(sub); st.session_state.mode = sub
             target_cats = []
             if "英語" in sub and "合同" in sub: target_cats = [k for k in raw_keys if "英語" in k]
             elif "数学" in sub and "合同" in sub: target_cats = [k for k in raw_keys if "数学" in k]
@@ -231,18 +236,15 @@ if 'mode' not in st.session_state:
                 data = all_q.get(cat, [])
                 total_ans_pool.extend([q['a'] for q in data])
                 f_data = [q for q in data if int(stats_data['history'].get(q['q'], {}).get('correct', 0)) < 5 or random.random() < 0.2]
-                
                 if "数学" in cat:
                     f_data = [q for q in f_data if not ("/" in q['q'] and " " in str(q['a']).strip())]
-                
                 if "並べ替え" in diff:
                     f_data = [q for q in f_data if "/" in q['q']]
                 elif "苦手克服" in diff:
                     f_data = [q for q in f_data if stats_data['history'].get(q['q'], {}).get('wrong', 0) > 0]
                 
                 if not f_data: f_data = data
-                random.shuffle(f_data)
-                cat_groups[cat] = f_data
+                random.shuffle(f_data); cat_groups[cat] = f_data
             
             interleaved = []
             if cat_groups:
@@ -252,37 +254,25 @@ if 'mode' not in st.session_state:
                         chunk = cat_groups[cat][i : i+3]
                         interleaved.extend(chunk)
             
-            st.session_state.questions = interleaved[:80]
-            st.session_state.all_ans_in_set = list(set(total_ans_pool))
-            st.session_state.index = 0
-            st.session_state.session_streak = 0
-            st.session_state.session_max_streak = 0
-            st.session_state.pending_results = []
-            st.session_state.show_result = False
-            st.rerun()
+            st.session_state.questions = interleaved[:80]; st.session_state.all_ans_in_set = list(set(total_ans_pool))
+            st.session_state.index = 0; st.session_state.session_streak = 0; st.session_state.session_max_streak = 0; st.session_state.pending_results = []; st.session_state.show_result = False; st.rerun()
 else:
     total = len(st.session_state.questions)
     if st.session_state.index >= total:
         sync_results_to_gsheet(); st.balloons(); st.success("特訓終了！")
         if st.button("TOPへ戻る"): st.session_state.clear(); st.rerun()
     else:
-        q = st.session_state.questions[st.session_state.index]
-        is_math = "数学" in q['orig_cat']
+        q = st.session_state.questions[st.session_state.index]; is_math = "数学" in q['orig_cat']
         is_order_q = ("/" in q['q']) and (" " in str(q['a']).strip())
-        
-        main_p, hint_p = parse_q_display(q['q'])
-        # 数学用の整形を適用
-        display_q = format_math_text(main_p)
+        main_p, hint_p = parse_q_display(q['q']); display_q = format_math_text(main_p)
         
         st.caption(f"カテゴリー: {q['orig_cat']} | 残り {total - st.session_state.index} 問")
         
         if is_math:
             col_l, col_r = st.columns([1.5, 1])
             with col_l:
-                # 文字色やサイズを調整して読みやすく
-                st.markdown(f"<div style='font-size:1.8rem; font-weight:bold; margin-bottom:10px;'>{display_q}</div>", unsafe_allow_html=True)
+                st.markdown(f"### {display_q}", unsafe_allow_html=True)
                 if hint_p: st.info(f"💡 {hint_p}")
-                # 計算用キャンバス
                 canvas_res = st_canvas(stroke_width=9, height=500, width=800, key=f"c_{st.session_state.index}", background_color="#f8f9fb")
             target_col = col_r
         else:
@@ -295,19 +285,16 @@ else:
             if is_math: st.write("---")
             if st.session_state.show_result:
                 if st.session_state.last_is_correct:
-                    st.success(f"## ✨ 正解！ : {format_math_text(q['a'])}")
+                    st.success(f"### ✨ 正解！ : {format_math_text(q['a'])}")
                     if st.button("次へ進む ➡️", use_container_width=True, type="primary"): st.session_state.index += 1; st.session_state.show_result = False; st.session_state.show_options = False; st.session_state.user_ans_list = []; st.rerun()
                 else:
-                    st.error(f"## ❌ ざんねん！ 正解は {format_math_text(q['a'])}")
-                    st.markdown(f"<div style='background-color:#ffe9e9; padding:15px; border-radius:10px; border:2px solid #ff4b4b; text-align:center;'><span style='color:#31333f; font-weight:bold; font-size:2rem;'>{format_math_text(q['a'])}</span></div>", unsafe_allow_html=True)
+                    st.error(f"### ❌ ざんねん！ 正解は **{format_math_text(q['a'])}**")
                     if st.button("理解した！次へ ➡️", use_container_width=True): st.session_state.index += 1; st.session_state.show_result = False; st.session_state.show_options = False; st.session_state.user_ans_list = []; st.rerun()
             else:
                 b_cols = st.columns(2)
                 with b_cols[0]:
                     if not st.session_state.show_options:
-                        if st.button("🔍 判定へ", use_container_width=True):
-                            # 数学の文章題ならキャンバスなしでも判定に進める
-                            st.session_state.show_options = True; st.rerun()
+                        if st.button("🔍 判定へ", use_container_width=True): st.session_state.show_options = True; st.rerun()
                 with b_cols[1]:
                     if st.button("🏳️ 中止保存", use_container_width=True): sync_results_to_gsheet(); st.session_state.clear(); st.rerun()
                 
@@ -316,7 +303,7 @@ else:
                     if is_order_q:
                         words = [w.strip() for w in main_p.replace("(","").replace(")","").replace("?","").replace(".","").split("/") if w.strip()]
                         current = st.session_state.user_ans_list; disp = [w for w in words if w not in current]
-                        if current: st.markdown(f"<div style='background-color:#e1f5fe; padding:15px; border-radius:10px; border-left:5px solid #03a9f4; margin-bottom:20px;'><span style='color:#0277bd; font-size:2.0rem; font-weight:bold; letter-spacing:1px;'>{' '.join(current)}</span></div>", unsafe_allow_html=True)
+                        if current: st.info(" ".join(current))
                         if disp:
                             cols = st.columns(5)
                             for i, w in enumerate(disp):
@@ -337,8 +324,7 @@ else:
                     else:
                         if 'cur_opts' not in st.session_state or st.session_state.get('last_q_id') != st.session_state.index:
                             opts = [q['a']] + generate_clever_distractors(q['a'], q['orig_cat'], st.session_state.all_ans_in_set)
-                            st.session_state.cur_opts = random.sample(list(set(opts)), len(list(set(opts))))
-                            st.session_state.last_q_id = st.session_state.index
+                            st.session_state.cur_opts = random.sample(list(set(opts)), len(list(set(opts)))); st.session_state.last_q_id = st.session_state.index
                         for i, opt in enumerate(st.session_state.cur_opts):
                             if st.button(format_math_text(opt), key=f"o_{i}", use_container_width=True):
                                 is_ok = (str(opt).lower() == str(q['a']).lower())
