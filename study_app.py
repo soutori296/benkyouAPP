@@ -151,7 +151,7 @@ def parse_q_display(text):
 for k, v in {"user_ans_list": [], "show_options": False, "show_result": False, "index": 0, "session_streak": 0, "session_max_streak": 0, "pending_results": []}.items():
     if k not in st.session_state: st.session_state[k] = v
 
-st.set_page_config(page_title="高校受験対策", layout="centered")
+st.set_page_config(page_title="高校受験対策", layout="wide")
 setup_audio_engine()
 
 # --- 2. サイドバー ---
@@ -232,7 +232,7 @@ else:
             st.write(f"残り {total_q - st.session_state.index} 問")
             main_p, hint_p = parse_q_display(q['q']); st.subheader(main_p)
             if hint_p: st.info(f"💡 {hint_p}")
-            canvas_res = st_canvas(stroke_width=9, height=250, width=750, key=f"c_{st.session_state.index}")
+            canvas_res = st_canvas(stroke_width=9, height=250, width=840, key=f"c_{st.session_state.index}")
             c1, c2 = st.columns(2)
             with c1:
                 if not st.session_state.show_options:
