@@ -1,7 +1,7 @@
 import streamlit as st
 from streamlit_drawable_canvas import st_canvas
 import json, os, random, time, base64, re, io
-import pandas as pd # 統計表示用
+import pandas as pd
 from datetime import datetime
 import gspread
 from google.oauth2.service_account import Credentials
@@ -29,6 +29,25 @@ def load_questions_from_gsheet():
             organized[cat].append({"rank": row.get('rank', 'A'), "q": str(row.get('q', '')), "a": str(row.get('a', '')), "h": str(row.get('h', ''))})
         return organized
     except: return {}
+
+# ★ 新機能：問題文と正解を直接修正する関数
+def update_question_in_gsheet(category, old_q, new_q, new_a):
+    creds = get_creds()
+    if not creds: return False
+    try:
+        client = gspread.authorize(creds)
+        sh = client.open("study_stats_db").worksheet("questions")
+        records = sh.get_all_records()
+        for i, row in enumerate(records):
+            if str(row.get('category')) == category and str(row.get('q')) == old_q:
+                # シートの行番号はインデックス+2 (1-based + ヘッダー)
+                row_idx = i + 2
+                sh.update_cell(row_idx, 2, new_q) # 列B: q
+                sh.update_cell(row_idx, 3, new_a) # 列C: a
+                return True
+    except Exception as e:
+        st.error(f"修正失敗: {e}")
+    return False
 
 def load_all_stats_with_records():
     creds = get_creds()
@@ -158,22 +177,40 @@ with st.sidebar:
         st.warning(f"👑 歴代最高: {max(rec, st.session_state.session_max_streak)}")
     
     st.divider()
-    # ★ 改良：保護者モード（統計表示）
+    # ★ 改良：保護者メニュー
     with st.expander("👨‍👩‍👧 保護者メニュー"):
-        if st.checkbox("保護者モードを有効にする"):
-            st.write("### 📈 全体の学習状況")
-            df = pd.DataFrame(stats_res["raw_data"])
-            if not df.empty:
-                # 数値を整数に変換し、正答率を計算
-                df['correct'] = pd.to_numeric(df['correct'], errors='coerce').fillna(0)
-                df['wrong'] = pd.to_numeric(df['wrong'], errors='coerce').fillna(0)
-                df['Total'] = df['correct'] + df['wrong']
-                df['正答率'] = (df['correct'] / df['Total'] * 100).fillna(0).round(1)
-                
-                # 集計表示
-                st.write(df[['subject', 'q', 'correct', 'wrong', '正答率']].sort_values(by='wrong', ascending=False))
-            else:
-                st.write("データがありません。")
+        p_mode = st.checkbox("保護者モードを有効にする")
+        if p_mode:
+            tab1, tab2 = st.tabs(["📊 統計", "🛠️ 問題修正"])
+            
+            with tab1:
+                st.write("### 📈 学習状況一覧")
+                df = pd.DataFrame(stats_res["raw_data"])
+                if not df.empty:
+                    df['correct'] = pd.to_numeric(df['correct'], errors='coerce').fillna(0)
+                    df['wrong'] = pd.to_numeric(df['wrong'], errors='coerce').fillna(0)
+                    df['Total'] = df['correct'] + df['wrong']
+                    df['正答率'] = (df['correct'] / df['Total'] * 100).fillna(0).round(1)
+                    st.write(df[['subject', 'q', 'correct', 'wrong', '正答率']].sort_values(by='wrong', ascending=False))
+                else: st.write("データなし")
+
+            with tab2:
+                st.write("### 🛠️ 問題エディタ")
+                all_q_data = load_questions_from_gsheet()
+                if all_q_data:
+                    e_sub = st.selectbox("教科を選択", list(all_q_data.keys()), key="edit_sub_sel")
+                    q_titles = [item['q'] for item in all_q_data[e_sub]]
+                    e_q_target = st.selectbox("修正する問題", q_titles, key="edit_q_sel")
+                    
+                    # 選択された問題の現在のデータを取得
+                    target_item = next(item for item in all_q_data[e_sub] if item['q'] == e_q_target)
+                    new_q_text = st.text_input("問題文", value=target_item['q'])
+                    new_a_text = st.text_input("正解", value=target_item['a'])
+                    
+                    if st.button("修正内容をスプレッドシートに保存"):
+                        if update_question_in_gsheet(e_sub, e_q_target, new_q_text, new_a_text):
+                            st.success("✅ 保存完了！")
+                            st.cache_data.clear(); time.sleep(1); st.rerun()
 
     st.divider(); st.write("<br>" * 10, unsafe_allow_html=True)
 
@@ -201,6 +238,7 @@ if 'mode' not in st.session_state:
             st.session_state.index, st.session_state.session_streak, st.session_state.session_max_streak, st.session_state.pending_results = 0, 0, 0, []
             st.session_state.show_result = False; st.rerun()
 else:
+    # (クイズ進行ロジック: Ver.172 を完全継承)
     total_q = len(st.session_state.questions)
     if st.session_state.index >= total_q:
         sync_results_to_gsheet(); st.balloons(); st.success("特訓終了！")
@@ -255,18 +293,13 @@ else:
                         words = [w.strip() for w in main_p.replace("(","").replace(")","").replace("?","").replace(".","").split("/") if w.strip()]
                         current = st.session_state.user_ans_list
                         disp = [w for w in words if w not in current]
-                        
-                        # ★ 改良：解答文字の巨大化
                         if current:
                             st.markdown(f"""<div style="background-color:#e1f5fe; padding:15px; border-radius:10px; border-left:5px solid #03a9f4; margin-bottom:20px;"><span style="color:#0277bd; font-size:2.0rem; font-weight:bold; letter-spacing:1px;">{" ".join(current)}</span></div>""", unsafe_allow_html=True)
-
-                        # ★ 改良：ボタン位置の固定（5列）
                         if len(disp) > 0:
                             cols = st.columns(5)
                             for i, w in enumerate(disp):
                                 if cols[i % 5].button(w, key=f"w_{i}_{len(current)}"):
                                     st.session_state.user_ans_list.append(w); st.rerun()
-                        
                         bc1, bc2 = st.columns(2)
                         with bc1:
                             if st.button("⬅️ 戻す", use_container_width=True):
@@ -274,20 +307,17 @@ else:
                         with bc2:
                             if st.button("🗑️ クリア", use_container_width=True):
                                 st.session_state.user_ans_list = []; st.rerun()
-                        
                         if len(current) == len(words):
                             is_ok = " ".join(current).lower() == q['a'].lower()
                             st.session_state.pending_results.append({'q': q['q'], 'is_ok': is_ok, 'rank': q.get('rank','A'), 'subject': st.session_state.mode})
                             st.components.v1.html(f"<script>window.parent.playJudge({str(is_ok).lower()});</script>", height=0)
-                            if is_ok:
-                                st.session_state.session_streak += 1; st.session_state.session_max_streak = max(st.session_state.session_max_streak, st.session_state.session_streak)
+                            if is_ok: st.session_state.session_streak += 1; st.session_state.session_max_streak = max(st.session_state.session_max_streak, st.session_state.session_streak)
                             else: st.session_state.session_streak = 0
                             st.session_state.last_is_correct = is_ok; time.sleep(0.5); st.session_state.show_result = True; st.rerun()
                     else:
                         if 'cur_opts' not in st.session_state or st.session_state.get('last_q_id') != st.session_state.index:
                             opts = [q['a']] + generate_clever_distractors(q['a'], st.session_state.mode, st.session_state.all_ans_in_set)
                             st.session_state.cur_opts = random.sample(list(set(opts)), len(list(set(opts)))); st.session_state.last_q_id = st.session_state.index
-                        
                         if not is_math:
                             opt_cols = st.columns(len(st.session_state.cur_opts))
                             for i, opt in enumerate(st.session_state.cur_opts):
@@ -295,8 +325,7 @@ else:
                                     is_ok = (opt.lower() == str(q['a']).lower())
                                     st.session_state.pending_results.append({'q': q['q'], 'is_ok': is_ok, 'rank': q.get('rank','A'), 'subject': st.session_state.mode})
                                     st.components.v1.html(f"<script>window.parent.playJudge({str(is_ok).lower()});</script>", height=0)
-                                    if is_ok:
-                                        st.session_state.session_streak += 1; st.session_state.session_max_streak = max(st.session_state.session_max_streak, st.session_state.session_streak)
+                                    if is_ok: st.session_state.session_streak += 1; st.session_state.session_max_streak = max(st.session_state.session_max_streak, st.session_state.session_streak)
                                     else: st.session_state.session_streak = 0
                                     st.session_state.last_is_correct = is_ok; time.sleep(0.5); st.session_state.show_result = True; st.rerun()
                         else:
@@ -305,7 +334,6 @@ else:
                                     is_ok = (opt.lower() == str(q['a']).lower())
                                     st.session_state.pending_results.append({'q': q['q'], 'is_ok': is_ok, 'rank': q.get('rank','A'), 'subject': st.session_state.mode})
                                     st.components.v1.html(f"<script>window.parent.playJudge({str(is_ok).lower()});</script>", height=0)
-                                    if is_ok:
-                                        st.session_state.session_streak += 1; st.session_state.session_max_streak = max(st.session_state.session_max_streak, st.session_state.session_streak)
+                                    if is_ok: st.session_state.session_streak += 1; st.session_state.session_max_streak = max(st.session_state.session_max_streak, st.session_state.session_streak)
                                     else: st.session_state.session_streak = 0
                                     st.session_state.last_is_correct = is_ok; time.sleep(0.5); st.session_state.show_result = True; st.rerun()
