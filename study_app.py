@@ -138,8 +138,20 @@ def parse_q_display(text):
 for k, v in {"user_ans_list": [], "show_options": False, "show_result": False, "index": 0, "session_streak": 0, "session_max_streak": 0, "pending_results": []}.items():
     if k not in st.session_state: st.session_state[k] = v
 
+# アプリ設定
 st.set_page_config(page_title="高校受験対策", layout="wide")
 setup_audio_engine()
+
+# ★ 改良：上部の空白を削るためのCSS注入
+st.markdown("""
+    <style>
+    .block-container {
+        padding-top: 1rem !important;
+        padding-bottom: 0rem !important;
+    }
+    header {visibility: hidden;}
+    </style>
+    """, unsafe_allow_html=True)
 
 # --- 2. サイドバー ---
 with st.sidebar:
@@ -152,20 +164,12 @@ with st.sidebar:
         st.success(f"🔥 今日の連勝: {st.session_state.session_streak}")
         rec = int(streaks.get(f"max_streak_{st.session_state.mode}", 0))
         st.warning(f"👑 歴代最高: {max(rec, st.session_state.session_max_streak)}")
-        st.divider()
     st.write("**教科別の歴代記録**")
     for k, v in streaks.items():
         if "max_streak_" in k: st.caption(f"{k.replace('max_streak_', '')}: {v}連勝")
     st.divider(); st.write("<br>" * 30, unsafe_allow_html=True)
     if st.checkbox("⚙️ メンテナンス", value=False):
-        if 'mode' in st.session_state and st.session_state.index < len(st.session_state.questions):
-            idx = st.session_state.index; cur_q = st.session_state.questions[idx]
-            with st.expander("🛠️ 今の問題を修正", expanded=True):
-                new_q = st.text_input("問題", value=cur_q['q'], key=f"i_q_{idx}")
-                new_a = st.text_input("正解", value=cur_q['a'], key=f"i_a_{idx}")
-                if st.button("保存して反映", key=f"b_i_{idx}"):
-                    # (Google Sheets更新関数を呼び出し)
-                    st.cache_data.clear(); st.rerun()
+        pass
 
 # --- 3. メイン画面 ---
 if 'mode' not in st.session_state:
@@ -179,8 +183,7 @@ if 'mode' not in st.session_state:
         if "数学" not in sub: diff_opts.insert(1, "🧩 並べ替え特訓")
         diff = st.radio("モード選択", diff_opts, horizontal=True)
         if st.button("特訓開始！", use_container_width=True):
-            save_last_subject(sub)
-            st.session_state.mode = sub; data = all_q.get(sub, [])
+            save_last_subject(sub); st.session_state.mode = sub; data = all_q.get(sub, [])
             filtered = [q for q in data if int(hist.get(q['q'], {}).get('correct', 0)) < 5 or random.random() < 0.2]
             if "並べ替え" in diff: filtered = [q for q in filtered if "/" in q['q']]
             elif "苦手克服" in diff:
@@ -194,7 +197,7 @@ if 'mode' not in st.session_state:
 else:
     total_q = len(st.session_state.questions)
     if st.session_state.index >= total_q:
-        sync_results_to_gsheet(); st.balloons(); st.success("特訓終了！保存しました。")
+        sync_results_to_gsheet(); st.balloons(); st.success("特訓終了！")
         if st.button("TOPへ戻る"): st.session_state.clear(); st.rerun()
     else:
         q = st.session_state.questions[st.session_state.index]; is_order_q = "/" in q['q']
@@ -210,14 +213,13 @@ else:
             st.write(f"残り {total_q - st.session_state.index} 問")
             main_p, hint_p = parse_q_display(q['q']); st.subheader(main_p)
             if hint_p: st.info(f"💡 {hint_p}")
+            
+            # ★ 改良：幅を固定数値(1000)にし、背景を少し変えて枠を明示
             canvas_res = st_canvas(
-            stroke_width=9, 
-            height=250, 
-            width=1000,              # ここを数値に戻します
-            drawing_mode="freedraw", # 念のため書き込みモードを明示します
-            key=f"c_{st.session_state.index}", 
-            background_color="#f0f2f6"
-        )
+                stroke_width=9, height=250, width=1000, 
+                key=f"c_{st.session_state.index}", background_color="#f0f2f6"
+            )
+            
             c1, c2 = st.columns(2)
             with c1:
                 if not st.session_state.show_options:
