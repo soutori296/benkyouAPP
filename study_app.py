@@ -13,6 +13,24 @@ def get_creds():
         return Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
     return None
 
+# ★ 改良：数学記号を人間が書く形式に変換
+def format_math_text(text):
+    if not isinstance(text, str): return text
+    text = text.replace('*', '×').replace('/', '÷')
+    # 累乗記号 ^ を LaTeX形式に（Streamlitのサブヘッダー等で有効）
+    if '^' in text:
+        text = re.sub(r'(\w+)\^(\d+)', r'\1<sup>\2</sup>', text)
+    return text
+
+# ★ 改良：簡単すぎる数学問題を判定
+def is_too_easy_math(category, q_text):
+    if "数学" not in category: return False
+    # 文字(x,y,a,b)、負の数(-)、累乗(^)、公式(π)、複雑な記号が含まれていれば「適切」
+    if re.search(r'[xyabπ\^\(\)]', q_text): return False
+    # 単なる正の整数の四則演算（例: 5 + 10）は「簡単すぎる」と判定
+    if re.match(r'^\d+\s*[\+\-\*\/]\s*\d+\s*=$', q_text.strip()): return True
+    return False
+
 @st.cache_data(ttl=300)
 def load_questions_from_gsheet():
     creds = get_creds()
@@ -23,10 +41,19 @@ def load_questions_from_gsheet():
         data = sh.get_all_records()
         organized = {}
         for row in data:
-            cat = row.get('category', '共通')
-            if not row.get('q') or not row.get('a'): continue
+            cat = str(row.get('category', '共通'))
+            q_raw = str(row.get('q', ''))
+            # 難易度フィルタ適用
+            if is_too_easy_math(cat, q_raw): continue
+            if not q_raw or not row.get('a'): continue
+            
             if cat not in organized: organized[cat] = []
-            organized[cat].append({"rank": row.get('rank', 'A'), "q": str(row.get('q', '')), "a": str(row.get('a', '')), "h": str(row.get('h', ''))})
+            organized[cat].append({
+                "rank": row.get('rank', 'A'), 
+                "q": q_raw, 
+                "a": str(row.get('a', '')), 
+                "h": str(row.get('h', ''))
+            })
         return organized
     except Exception as e:
         st.error(f"データ読み込み失敗: {e}"); return {}
@@ -56,8 +83,7 @@ def load_all_stats_with_records():
         history = {str(row['q']): {"correct": int(row['correct'] or 0), "wrong": int(row['wrong'] or 0), "subject": str(row.get('subject', '不明'))} for row in hist_data if row.get('q')}
         streaks = {}; last_sub = ""
         try:
-            sum_sh = ss.worksheet("summary")
-            sum_data = sum_sh.get_all_records()
+            sum_sh = ss.worksheet("summary"); sum_data = sum_sh.get_all_records()
             for row in sum_data:
                 streaks[row['key']] = row['value']
                 if row['key'] == "last_selected_subject": last_sub = str(row['value'])
@@ -164,11 +190,10 @@ with st.sidebar:
     
     if 'mode' in st.session_state:
         st.success(f"🔥 今日の連勝: {st.session_state.session_streak}")
-        rec = int(streaks.get(f"max_streak_{st.session_state.mode}", 0))
-        st.warning(f"👑 歴代最高: {max(rec, st.session_state.session_max_streak)}")
+        rec = streaks.get(f"max_streak_{st.session_state.mode}", 0)
+        st.warning(f"👑 歴代最高: {max(int(rec), st.session_state.session_max_streak)}")
     
     st.divider()
-    # --- 保護者メニュー（Ver.180：最短UI版） ---
     with st.expander("👨‍👩‍👧 保護者メニュー"):
         p_mode = st.checkbox("保護者モードを有効にする")
         if p_mode:
@@ -185,50 +210,32 @@ with st.sidebar:
             with p_tabs[1]:
                 all_q_edit = load_questions_from_gsheet()
                 if all_q_edit:
-                    # 1. 今の問題を即セット
                     if 'mode' in st.session_state and st.session_state.index < len(st.session_state.questions):
                         cur_q = st.session_state.questions[st.session_state.index]
                         if st.button(f"📢 今の問題を修正：{cur_q['q'][:10]}...", use_container_width=True):
                             st.session_state["p_edit_q_obj"] = {"cat": st.session_state.mode, "q": cur_q['q'], "a": cur_q['a']}
                             st.rerun()
-                    
                     st.write("---")
-                    # 2. 検索欄
-                    search_txt = st.text_input("🔍 問題を検索（クリックで修正対象を選択）", placeholder="キーワードを入力")
+                    search_txt = st.text_input("🔍 問題を検索", placeholder="キーワードを入力")
                     
-                    if search_txt:
-                        flat_list = []
-                        for cat, items in all_q_edit.items():
-                            for item in items:
-                                if search_txt.lower() in item['q'].lower():
-                                    flat_list.append({"cat": cat, "q": item['q'], "a": item['a']})
-                        
-                        if flat_list:
-                            st.caption("検索結果（クリックしてセット）:")
-                            for i, f in enumerate(flat_list[:10]): # 上位10件をボタン表示
-                                if st.button(f"[{f['cat']}] {f['q'][:20]}...", key=f"src_{i}", use_container_width=True):
-                                    st.session_state["p_edit_q_obj"] = f
-                                    st.rerun()
-                        else: st.info("見つかりません。")
-
-                    st.write("---")
-                    # 3. 修正フォーム（値がある時だけ表示、ないなら空白）
+                    flat_list = []
+                    for cat, items in all_q_edit.items():
+                        for item in items:
+                            if not search_txt or search_txt.lower() in item['q'].lower():
+                                flat_list.append({"cat": cat, "q": item['q'], "a": item['a']})
+                    
+                    if flat_list:
+                        for i, f in enumerate(flat_list[:5]): # 検索結果をボタン化
+                            if st.button(f"[{f['cat']}] {format_math_text(f['q'][:20])}...", key=f"src_{i}", use_container_width=True):
+                                st.session_state["p_edit_q_obj"] = f; st.rerun()
+                    
                     target = st.session_state["p_edit_q_obj"]
-                    val_q = target['q'] if target else ""
-                    val_a = target['a'] if target else ""
+                    new_q = st.text_input("問題文 (修正)", value=target['q'] if target else "")
+                    new_a = st.text_input("正解 (修正)", value=target['a'] if target else "")
                     
-                    if target: st.caption(f"対象教科: {target['cat']}")
-                    new_q = st.text_input("問題文 (修正)", value=val_q)
-                    new_a = st.text_input("正解 (修正)", value=val_a)
-                    
-                    if st.button("✅ 修正内容を保存", use_container_width=True):
+                    if st.button("✅ 修正を保存", use_container_width=True):
                         if target and update_question_in_gsheet(target['cat'], target['q'], new_q, new_a):
-                            st.success("保存完了！")
-                            st.cache_data.clear()
-                            st.session_state["p_edit_q_obj"] = None
-                            time.sleep(1); st.rerun()
-                        elif not target:
-                            st.error("修正する問題を選択してください。")
+                            st.success("保存完了！"); st.cache_data.clear(); st.session_state["p_edit_q_obj"] = None; time.sleep(1); st.rerun()
 
     st.divider(); st.write("<br>" * 10, unsafe_allow_html=True)
 
@@ -263,15 +270,19 @@ else:
     else:
         q = st.session_state.questions[st.session_state.index]; is_order_q = "/" in q['q']; is_math = "数学" in st.session_state.mode
         main_p, hint_p = parse_q_display(q['q'])
+        
+        # ★ 表示用の記号変換
+        display_q = format_math_text(main_p)
+
         if is_math:
             col_l, col_r = st.columns([1.5, 1])
             with col_l:
-                st.write(f"残り {total_q - st.session_state.index} 問"); st.subheader(main_p)
+                st.write(f"残り {total_q - st.session_state.index} 問"); st.markdown(f"## {display_q}", unsafe_allow_html=True)
                 if hint_p: st.info(f"💡 {hint_p}")
                 canvas_res = st_canvas(stroke_width=9, height=500, width=800, key=f"c_{st.session_state.index}", background_color="#f0f2f6")
             target_col = col_r
         else:
-            st.write(f"残り {total_q - st.session_state.index} 問"); st.subheader(main_p)
+            st.write(f"残り {total_q - st.session_state.index} 問"); st.subheader(display_q)
             if hint_p: st.info(f"💡 {hint_p}")
             canvas_res = st_canvas(stroke_width=9, height=250, width=1200, key=f"c_{st.session_state.index}", background_color="#f0f2f6")
             st.write("---"); target_col = st.container()
@@ -280,12 +291,12 @@ else:
             if is_math: st.write("---")
             if st.session_state.show_result:
                 if st.session_state.last_is_correct:
-                    st.success(f"## ✨ 正解！ : {q['a']}")
+                    st.success(f"## ✨ 正解！ : {format_math_text(q['a'])}")
                     if st.button("次へ進む ➡️", use_container_width=True, type="primary"):
                         st.session_state.index += 1; st.session_state.show_result = False; st.session_state.show_options = False; st.session_state.user_ans_list = []; st.rerun()
                 else:
-                    st.error(f"## ❌ ざんねん！ 正解は {q['a']}")
-                    st.markdown(f"""<div style="background-color:#ffe9e9; padding:15px; border-radius:10px; border:2px solid #ff4b4b; text-align:center;"><span style="color:#31333f; font-weight:bold; font-size:2rem;">{q['a']}</span></div>""", unsafe_allow_html=True)
+                    st.error(f"## ❌ ざんねん！ 正解は {format_math_text(q['a'])}")
+                    st.markdown(f"""<div style="background-color:#ffe9e9; padding:15px; border-radius:10px; border:2px solid #ff4b4b; text-align:center;"><span style="color:#31333f; font-weight:bold; font-size:2rem;">{format_math_text(q['a'])}</span></div>""", unsafe_allow_html=True)
                     if st.button("理解した！次へ ➡️", use_container_width=True):
                         st.session_state.index += 1; st.session_state.show_result = False; st.session_state.show_options = False; st.session_state.user_ans_list = []; st.rerun()
             else:
@@ -333,8 +344,8 @@ else:
                         if not is_math:
                             opt_cols = st.columns(len(st.session_state.cur_opts))
                             for i, opt in enumerate(st.session_state.cur_opts):
-                                if opt_cols[i].button(opt, key=f"o_{i}", use_container_width=True):
-                                    is_ok = (opt.lower() == str(q['a']).lower())
+                                if opt_cols[i].button(format_math_text(opt), key=f"o_{i}", use_container_width=True):
+                                    is_ok = (str(opt).lower() == str(q['a']).lower())
                                     st.session_state.pending_results.append({'q': q['q'], 'is_ok': is_ok, 'rank': q.get('rank','A'), 'subject': st.session_state.mode})
                                     st.components.v1.html(f"<script>window.parent.playJudge({str(is_ok).lower()});</script>", height=0)
                                     if is_ok: st.session_state.session_streak += 1; st.session_state.session_max_streak = max(st.session_state.session_max_streak, st.session_state.session_streak)
@@ -342,8 +353,8 @@ else:
                                     st.session_state.last_is_correct = is_ok; time.sleep(0.5); st.session_state.show_result = True; st.rerun()
                         else:
                             for i, opt in enumerate(st.session_state.cur_opts):
-                                if st.button(opt, key=f"o_{i}", use_container_width=True):
-                                    is_ok = (opt.lower() == str(q['a']).lower())
+                                if st.button(format_math_text(opt), key=f"o_{i}", use_container_width=True):
+                                    is_ok = (str(opt).lower() == str(q['a']).lower())
                                     st.session_state.pending_results.append({'q': q['q'], 'is_ok': is_ok, 'rank': q.get('rank','A'), 'subject': st.session_state.mode})
                                     st.components.v1.html(f"<script>window.parent.playJudge({str(is_ok).lower()});</script>", height=0)
                                     if is_ok: st.session_state.session_streak += 1; st.session_state.session_max_streak = max(st.session_state.session_max_streak, st.session_state.session_streak)
