@@ -190,9 +190,8 @@ else:
         q = st.session_state.questions[st.session_state.index]; is_order_q = "/" in q['q']; is_math = "数学" in st.session_state.mode
         main_p, hint_p = parse_q_display(q['q'])
 
-        # ★ 教科別のレイアウト定義
+        # ★ 修正：教科別のレイアウト定義
         if is_math:
-            # 数学：左右分割
             col_left, col_right = st.columns([1.5, 1])
             with col_left:
                 st.write(f"残り {total_q - st.session_state.index} 問")
@@ -201,16 +200,16 @@ else:
                 canvas_res = st_canvas(stroke_width=9, height=500, width=800, key=f"c_{st.session_state.index}", background_color="#f0f2f6")
             target_col = col_right
         else:
-            # 英語・その他：上下積み上げ
             st.write(f"残り {total_q - st.session_state.index} 問")
             st.subheader(main_p)
             if hint_p: st.info(f"💡 {hint_p}")
             canvas_res = st_canvas(stroke_width=9, height=250, width=1200, key=f"c_{st.session_state.index}", background_color="#f0f2f6")
             st.write("---")
-            target_col = st # そのまま下に表示
+            # 修正ポイント：st.container() を使うことで with target_col が動くように
+            target_col = st.container()
 
         with target_col:
-            if is_math: st.write("---") # 数学の時だけ右側に区切り
+            if is_math: st.write("---")
             if st.session_state.show_result:
                 if st.session_state.last_is_correct:
                     st.success(f"## ✨ 正解！ : {q['a']}")
@@ -222,7 +221,6 @@ else:
                     if st.button("理解した！次へ ➡️", use_container_width=True):
                         st.session_state.index += 1; st.session_state.show_result = False; st.session_state.show_options = False; st.session_state.user_ans_list = []; st.rerun()
             else:
-                # 判定・操作ボタン
                 btn_cols = st.columns(2)
                 with btn_cols[0]:
                     if not st.session_state.show_options:
@@ -239,12 +237,18 @@ else:
                     if is_order_q:
                         words = [w.strip() for w in main_p.replace("(","").replace(")","").replace("?","").replace(".","").split("/") if w.strip()]
                         current = st.session_state.user_ans_list; disp = [w for w in words if w not in current]
-                        # 英語は横に並べる
-                        opt_cols = st.columns(min(len(disp), 5)) if not is_math else [st] * len(disp)
-                        for i, w in enumerate(disp):
-                            target = opt_cols[i % 5] if not is_math else st
-                            if target.button(w, key=f"w_{i}", use_container_width=True):
-                                st.session_state.user_ans_list.append(w); st.rerun()
+                        
+                        # 英語は横5列、数学は縦1列
+                        if not is_math:
+                            opt_cols = st.columns(min(len(disp), 5))
+                            for i, w in enumerate(disp):
+                                if opt_cols[i % 5].button(w, key=f"w_{i}", use_container_width=True):
+                                    st.session_state.user_ans_list.append(w); st.rerun()
+                        else:
+                            for i, w in enumerate(disp):
+                                if st.button(w, key=f"w_{i}", use_container_width=True):
+                                    st.session_state.user_ans_list.append(w); st.rerun()
+                                    
                         st.markdown(f"**解答:** {' '.join(current)}")
                         bc1, bc2 = st.columns(2)
                         with bc1:
@@ -253,6 +257,7 @@ else:
                         with bc2:
                             if st.button("🗑️ クリア", use_container_width=True):
                                 st.session_state.user_ans_list = []; st.rerun()
+                        
                         if len(current) == len(words):
                             is_ok = " ".join(current).lower() == q['a'].lower()
                             st.session_state.pending_results.append({'q': q['q'], 'is_ok': is_ok, 'rank': q.get('rank','A'), 'subject': st.session_state.mode})
@@ -265,7 +270,8 @@ else:
                         if 'cur_opts' not in st.session_state or st.session_state.get('last_q_id') != st.session_state.index:
                             opts = [q['a']] + generate_clever_distractors(q['a'], st.session_state.mode, st.session_state.all_ans_in_set)
                             st.session_state.cur_opts = random.sample(list(set(opts)), len(list(set(opts)))); st.session_state.last_q_id = st.session_state.index
-                        # 英語は横に並べる、数学は縦に並べる
+                        
+                        # 英語は横並び、数学は縦並び
                         if not is_math:
                             opt_cols = st.columns(len(st.session_state.cur_opts))
                             for i, opt in enumerate(st.session_state.cur_opts):
