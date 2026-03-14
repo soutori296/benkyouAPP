@@ -22,6 +22,7 @@ def format_math_text(text):
 def is_too_easy_math(category, q_text):
     if "数学" not in category: return False
     if re.search(r'[xyabπ\^\(\)]', q_text): return False
+    # 負の数やカッコがない単純な正の数の四則演算（例: 80/8, 11+9）を除外
     if re.match(r'^\d+\s*[\+\-\*\/]\s*\d+\s*=$', q_text.strip()): return True
     return False
 
@@ -39,7 +40,13 @@ def load_questions_from_gsheet():
             q_raw = str(row.get('q', ''))
             if is_too_easy_math(cat, q_raw) or not q_raw or not row.get('a'): continue
             if cat not in organized: organized[cat] = []
-            organized[cat].append({"rank": row.get('rank', 'A'), "q": q_raw, "a": str(row.get('a', '')), "h": str(row.get('h', ''))})
+            organized[cat].append({
+                "rank": row.get('rank', 'A'), 
+                "q": q_raw, 
+                "a": str(row.get('a', '')), 
+                "h": str(row.get('h', '')),
+                "orig_cat": cat # 記録保存用に元のカテゴリを保持
+            })
         return organized
     except: return {}
 
@@ -99,6 +106,7 @@ def sync_results_to_gsheet():
         final = [['q', 'correct', 'wrong', 'rank', 'subject']]
         for v in cur_data.values(): final.append([v['q'], v['correct'], v['wrong'], v['rank'], v['subject']])
         sheet.update('A1', final)
+        
         sum_sh = ss.worksheet("summary"); key = f"max_streak_{st.session_state.mode}"; val = st.session_state.session_max_streak; found = False
         for i, r in enumerate(sum_sh.get_all_values()):
             if r[0] == key:
@@ -192,34 +200,61 @@ with st.sidebar:
 if 'mode' not in st.session_state:
     st.title("🛡️ 高校受験対策"); all_q = load_questions_from_gsheet()
     if all_q:
-        q_keys = list(all_q.keys()); last_sub = stats_data['last_sub']
+        # 合同メニューの作成
+        raw_keys = list(all_q.keys())
+        special_options = ["英語 (1・2年合同)", "数学 (1・2年合同)"]
+        q_keys = special_options + raw_keys
+        
+        last_sub = stats_data['last_sub']
         sub = st.selectbox("特訓セットを選択", q_keys, index=q_keys.index(last_sub) if last_sub in q_keys else 0)
         diff = st.radio("モード選択", ["ミックス", "🧩 並べ替え特訓", "🔥 苦手克服"], horizontal=True)
         
         if st.button("特訓開始！", use_container_width=True):
             save_last_subject(sub)
             st.session_state.mode = sub
-            data = all_q.get(sub, [])
             
-            # --- ここでフィルタリングを実施 ---
-            # 1. 未習熟またはランダム抽出
-            filtered = [q for q in data if int(stats_data['history'].get(q['q'], {}).get('correct', 0)) < 5 or random.random() < 0.2]
+            # 抽出対象のカテゴリを決定
+            target_cats = []
+            if "英語" in sub and "合同" in sub: target_cats = [k for k in raw_keys if "英語" in k]
+            elif "数学" in sub and "合同" in sub: target_cats = [k for k in raw_keys if "数学" in k]
+            else: target_cats = [sub]
             
-            # 2. 数学の場合、並べ替え形式とみなされる問題（/を含み、答えにスペースがある）を完全に除外
-            if "数学" in sub:
-                filtered = [q for q in filtered if not ("/" in q['q'] and " " in str(q['a']).strip())]
+            # カテゴリごとに問題をフィルタリングして収集
+            cat_groups = {}
+            total_ans_pool = []
+            for cat in target_cats:
+                data = all_q.get(cat, [])
+                total_ans_pool.extend([q['a'] for q in data])
+                
+                # 基本フィルタ（正答率やランダム）
+                f_data = [q for q in data if int(stats_data['history'].get(q['q'], {}).get('correct', 0)) < 5 or random.random() < 0.2]
+                
+                # 数学の並び替え誤判定防止
+                if "数学" in cat:
+                    f_data = [q for q in f_data if not ("/" in q['q'] and " " in str(q['a']).strip())]
+                
+                # モード別フィルタ
+                if "並べ替え" in diff:
+                    f_data = [q for q in f_data if "/" in q['q']]
+                elif "苦手克服" in diff:
+                    f_data = [q for q in f_data if stats_data['history'].get(q['q'], {}).get('wrong', 0) > 0]
+                
+                if not f_data: f_data = data
+                random.shuffle(f_data)
+                cat_groups[cat] = f_data
             
-            # 3. ユーザー選択のモード適用
-            if "並べ替え" in diff:
-                filtered = [q for q in filtered if "/" in q['q']]
-            elif "苦手克服" in diff:
-                filtered = [q for q in filtered if stats_data['history'].get(q['q'], {}).get('wrong', 0) > 0]
+            # --- 3問ローテーション（インターリーブ）ロジック ---
+            interleaved = []
+            if cat_groups:
+                # 各カテゴリの最大問題数を取得
+                max_q = max(len(v) for v in cat_groups.values())
+                for i in range(0, max_q, 3):
+                    for cat in sorted(cat_groups.keys()): # 並び順を安定させる
+                        chunk = cat_groups[cat][i : i+3]
+                        interleaved.extend(chunk)
             
-            if not filtered: filtered = data
-            
-            random.shuffle(filtered)
-            st.session_state.questions = filtered[:50]
-            st.session_state.all_ans_in_set = [q['a'] for q in data]
+            st.session_state.questions = interleaved[:80] # 少し多めにセット
+            st.session_state.all_ans_in_set = list(set(total_ans_pool))
             st.session_state.index = 0
             st.session_state.session_streak = 0
             st.session_state.session_max_streak = 0
@@ -233,20 +268,22 @@ else:
         if st.button("TOPへ戻る"): st.session_state.clear(); st.rerun()
     else:
         q = st.session_state.questions[st.session_state.index]
-        is_math = "数学" in st.session_state.mode
-        # 出題時の表示形式判定
+        is_math = "数学" in q['orig_cat']
         is_order_q = ("/" in q['q']) and (" " in str(q['a']).strip())
         
         main_p, hint_p = parse_q_display(q['q']); display_q = format_math_text(main_p)
+        
+        st.caption(f"カテゴリー: {q['orig_cat']} | 残り {total - st.session_state.index} 問")
+        
         if is_math:
             col_l, col_r = st.columns([1.5, 1])
             with col_l:
-                st.write(f"残り {total - st.session_state.index} 問"); st.markdown(f"## {display_q}", unsafe_allow_html=True)
+                st.markdown(f"## {display_q}", unsafe_allow_html=True)
                 if hint_p: st.info(f"💡 {hint_p}")
                 canvas_res = st_canvas(stroke_width=9, height=500, width=800, key=f"c_{st.session_state.index}", background_color="#f0f2f6")
             target_col = col_r
         else:
-            st.write(f"残り {total - st.session_state.index} 問"); st.subheader(display_q)
+            st.subheader(display_q)
             if hint_p: st.info(f"💡 {hint_p}")
             canvas_res = st_canvas(stroke_width=9, height=250, width=1200, key=f"c_{st.session_state.index}", background_color="#f0f2f6")
             st.write("---"); target_col = st.container()
@@ -288,16 +325,22 @@ else:
                         with bc2:
                             if st.button("🗑️ クリア", use_container_width=True): st.session_state.user_ans_list = []; st.rerun()
                         if len(current) == len(words):
-                            is_ok = " ".join(current).lower() == q['a'].lower(); st.session_state.pending_results.append({'q': q['q'], 'is_ok': is_ok, 'rank': q.get('rank','A'), 'subject': st.session_state.mode}); st.components.v1.html(f"<script>window.parent.playJudge({str(is_ok).lower()});</script>", height=0)
+                            is_ok = " ".join(current).lower() == q['a'].lower()
+                            st.session_state.pending_results.append({'q': q['q'], 'is_ok': is_ok, 'rank': q.get('rank','A'), 'subject': q['orig_cat']})
+                            st.components.v1.html(f"<script>window.parent.playJudge({str(is_ok).lower()});</script>", height=0)
                             if is_ok: st.session_state.session_streak += 1; st.session_state.session_max_streak = max(st.session_state.session_max_streak, st.session_state.session_streak)
                             else: st.session_state.session_streak = 0
                             st.session_state.last_is_correct = is_ok; time.sleep(0.5); st.session_state.show_result = True; st.rerun()
                     else:
                         if 'cur_opts' not in st.session_state or st.session_state.get('last_q_id') != st.session_state.index:
-                            opts = [q['a']] + generate_clever_distractors(q['a'], st.session_state.mode, st.session_state.all_ans_in_set); st.session_state.cur_opts = random.sample(list(set(opts)), len(list(set(opts)))); st.session_state.last_q_id = st.session_state.index
+                            opts = [q['a']] + generate_clever_distractors(q['a'], q['orig_cat'], st.session_state.all_ans_in_set)
+                            st.session_state.cur_opts = random.sample(list(set(opts)), len(list(set(opts))))
+                            st.session_state.last_q_id = st.session_state.index
                         for i, opt in enumerate(st.session_state.cur_opts):
                             if st.button(format_math_text(opt), key=f"o_{i}", use_container_width=True):
-                                is_ok = (str(opt).lower() == str(q['a']).lower()); st.session_state.pending_results.append({'q': q['q'], 'is_ok': is_ok, 'rank': q.get('rank','A'), 'subject': st.session_state.mode}); st.components.v1.html(f"<script>window.parent.playJudge({str(is_ok).lower()});</script>", height=0)
+                                is_ok = (str(opt).lower() == str(q['a']).lower())
+                                st.session_state.pending_results.append({'q': q['q'], 'is_ok': is_ok, 'rank': q.get('rank','A'), 'subject': q['orig_cat']})
+                                st.components.v1.html(f"<script>window.parent.playJudge({str(is_ok).lower()});</script>", height=0)
                                 if is_ok: st.session_state.session_streak += 1; st.session_state.session_max_streak = max(st.session_state.session_max_streak, st.session_state.session_streak)
                                 else: st.session_state.session_streak = 0
                                 st.session_state.last_is_correct = is_ok; time.sleep(0.5); st.session_state.show_result = True; st.rerun()
