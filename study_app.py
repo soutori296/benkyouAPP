@@ -15,14 +15,19 @@ def get_creds():
 
 def format_math_text(text):
     if not isinstance(text, str): return text
+    # 記号の置換
     text = text.replace('*', '×').replace('/', '÷')
+    # 指数表示
     if '^' in text: text = re.sub(r'(\w+)\^(\d+)', r'\1<sup>\2</sup>', text)
+    # 変数x, y, a, b を斜体にする (数式っぽく見せる)
+    text = re.sub(r'\b([xyab])\b', r'<i>\1</i>', text)
     return text
 
 def is_too_easy_math(category, q_text):
     if "数学" not in category: return False
-    if re.search(r'[xyabπ\^\(\)]', q_text): return False
-    # 負の数やカッコがない単純な正の数の四則演算（例: 80/8, 11+9）を除外
+    # 文字や記号が含まれればOK
+    if re.search(r'[xyabπ\^\(\)＝=]', q_text): return False
+    # 単純な正の数の四則演算（例: 80/8, 11+9）を除外
     if re.match(r'^\d+\s*[\+\-\*\/]\s*\d+\s*=$', q_text.strip()): return True
     return False
 
@@ -45,7 +50,7 @@ def load_questions_from_gsheet():
                 "q": q_raw, 
                 "a": str(row.get('a', '')), 
                 "h": str(row.get('h', '')),
-                "orig_cat": cat # 記録保存用に元のカテゴリを保持
+                "orig_cat": cat
             })
         return organized
     except: return {}
@@ -126,6 +131,7 @@ def generate_clever_distractors(correct_ans, mode, all_ans):
             if "-" in c_ans: dists.add(c_ans.replace("-", ""))
             else: dists.add("-" + c_ans)
     pool = [str(a) for a in all_ans if abs(len(str(a)) - len(c_ans)) <= 2 and str(a).lower() != c_ans.lower()]
+    random.shuffle(pool)
     for c in pool:
         if len(dists) >= 3: break
         dists.add(c)
@@ -138,9 +144,11 @@ def setup_audio():
     st.components.v1.html(f"<script>window.parent.playJudge=function(isOk){{new Audio(isOk?'data:audio/mp3;base64,{c_b64}':'data:audio/mp3;base64,{w_b64}').play();}};</script>", height=0)
 
 def parse_q_display(text):
-    m = re.search(r'\s+([ぁ-んァ-ヶ一-龠].*)$', text)
-    if m: return text[:m.start()].strip(), m.group(1).strip()
-    return text, ""
+    # 英語の問題（英字から始まる）のみ、末尾の日本語をヒントとして切り出す
+    if re.match(r'^[A-Za-z\s\(\)\.\,\?\!]+', text):
+        m = re.search(r'\s+([ぁ-んァ-ヶ一-龠].*)$', text)
+        if m: return text[:m.start()].strip(), m.group(1).strip()
+    return text, "" # 日本語開始の文章題などは分割しない
 
 # セッション初期化
 for k, v in {"user_ans_list": [], "show_options": False, "show_result": False, "index": 0, "session_streak": 0, "session_max_streak": 0, "pending_results": [], "p_edit_obj": None}.items():
@@ -200,7 +208,6 @@ with st.sidebar:
 if 'mode' not in st.session_state:
     st.title("🛡️ 高校受験対策"); all_q = load_questions_from_gsheet()
     if all_q:
-        # 合同メニューの作成
         raw_keys = list(all_q.keys())
         special_options = ["英語 (1・2年合同)", "数学 (1・2年合同)"]
         q_keys = special_options + raw_keys
@@ -213,27 +220,21 @@ if 'mode' not in st.session_state:
             save_last_subject(sub)
             st.session_state.mode = sub
             
-            # 抽出対象のカテゴリを決定
             target_cats = []
             if "英語" in sub and "合同" in sub: target_cats = [k for k in raw_keys if "英語" in k]
             elif "数学" in sub and "合同" in sub: target_cats = [k for k in raw_keys if "数学" in k]
             else: target_cats = [sub]
             
-            # カテゴリごとに問題をフィルタリングして収集
             cat_groups = {}
             total_ans_pool = []
             for cat in target_cats:
                 data = all_q.get(cat, [])
                 total_ans_pool.extend([q['a'] for q in data])
-                
-                # 基本フィルタ（正答率やランダム）
                 f_data = [q for q in data if int(stats_data['history'].get(q['q'], {}).get('correct', 0)) < 5 or random.random() < 0.2]
                 
-                # 数学の並び替え誤判定防止
                 if "数学" in cat:
                     f_data = [q for q in f_data if not ("/" in q['q'] and " " in str(q['a']).strip())]
                 
-                # モード別フィルタ
                 if "並べ替え" in diff:
                     f_data = [q for q in f_data if "/" in q['q']]
                 elif "苦手克服" in diff:
@@ -243,17 +244,15 @@ if 'mode' not in st.session_state:
                 random.shuffle(f_data)
                 cat_groups[cat] = f_data
             
-            # --- 3問ローテーション（インターリーブ）ロジック ---
             interleaved = []
             if cat_groups:
-                # 各カテゴリの最大問題数を取得
                 max_q = max(len(v) for v in cat_groups.values())
                 for i in range(0, max_q, 3):
-                    for cat in sorted(cat_groups.keys()): # 並び順を安定させる
+                    for cat in sorted(cat_groups.keys()):
                         chunk = cat_groups[cat][i : i+3]
                         interleaved.extend(chunk)
             
-            st.session_state.questions = interleaved[:80] # 少し多めにセット
+            st.session_state.questions = interleaved[:80]
             st.session_state.all_ans_in_set = list(set(total_ans_pool))
             st.session_state.index = 0
             st.session_state.session_streak = 0
@@ -271,21 +270,25 @@ else:
         is_math = "数学" in q['orig_cat']
         is_order_q = ("/" in q['q']) and (" " in str(q['a']).strip())
         
-        main_p, hint_p = parse_q_display(q['q']); display_q = format_math_text(main_p)
+        main_p, hint_p = parse_q_display(q['q'])
+        # 数学用の整形を適用
+        display_q = format_math_text(main_p)
         
         st.caption(f"カテゴリー: {q['orig_cat']} | 残り {total - st.session_state.index} 問")
         
         if is_math:
             col_l, col_r = st.columns([1.5, 1])
             with col_l:
-                st.markdown(f"## {display_q}", unsafe_allow_html=True)
+                # 文字色やサイズを調整して読みやすく
+                st.markdown(f"<div style='font-size:1.8rem; font-weight:bold; margin-bottom:10px;'>{display_q}</div>", unsafe_allow_html=True)
                 if hint_p: st.info(f"💡 {hint_p}")
-                canvas_res = st_canvas(stroke_width=9, height=500, width=800, key=f"c_{st.session_state.index}", background_color="#f0f2f6")
+                # 計算用キャンバス
+                canvas_res = st_canvas(stroke_width=9, height=500, width=800, key=f"c_{st.session_state.index}", background_color="#f8f9fb")
             target_col = col_r
         else:
             st.subheader(display_q)
             if hint_p: st.info(f"💡 {hint_p}")
-            canvas_res = st_canvas(stroke_width=9, height=250, width=1200, key=f"c_{st.session_state.index}", background_color="#f0f2f6")
+            canvas_res = st_canvas(stroke_width=9, height=250, width=1200, key=f"c_{st.session_state.index}", background_color="#f8f9fb")
             st.write("---"); target_col = st.container()
 
         with target_col:
@@ -303,8 +306,8 @@ else:
                 with b_cols[0]:
                     if not st.session_state.show_options:
                         if st.button("🔍 判定へ", use_container_width=True):
-                            if not is_order_q and (not canvas_res.json_data or len(canvas_res.json_data.get("objects", [])) < 2): st.error("☝️ 2画以上書いてね！")
-                            else: st.session_state.show_options = True; st.rerun()
+                            # 数学の文章題ならキャンバスなしでも判定に進める
+                            st.session_state.show_options = True; st.rerun()
                 with b_cols[1]:
                     if st.button("🏳️ 中止保存", use_container_width=True): sync_results_to_gsheet(); st.session_state.clear(); st.rerun()
                 
