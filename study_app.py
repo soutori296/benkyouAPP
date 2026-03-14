@@ -32,7 +32,6 @@ def load_questions_from_gsheet():
         st.error(f"問題データ読み込み失敗: {e}")
         return {}
 
-# ★ 問題修正用の関数
 def update_question_in_gsheet(category, old_q, new_q, new_a):
     creds = get_creds()
     if not creds: return False
@@ -43,8 +42,8 @@ def update_question_in_gsheet(category, old_q, new_q, new_a):
         for i, row in enumerate(records):
             if str(row.get('category')) == category and str(row.get('q')) == old_q:
                 row_idx = i + 2
-                sh.update_cell(row_idx, 2, new_q) # q列を更新
-                sh.update_cell(row_idx, 3, new_a) # a列を更新
+                sh.update_cell(row_idx, 2, new_q)
+                sh.update_cell(row_idx, 3, new_a)
                 return True
     except Exception as e:
         st.error(f"修正保存エラー: {e}")
@@ -176,7 +175,7 @@ with st.sidebar:
         st.warning(f"👑 歴代最高: {max(rec, st.session_state.session_max_streak)}")
     
     st.divider()
-    # --- 保護者メニュー（統計 & 修正） ---
+    # --- 保護者メニュー ---
     with st.expander("👨‍👩‍👧 保護者メニュー"):
         p_mode = st.checkbox("保護者モードを有効にする")
         if p_mode:
@@ -191,24 +190,39 @@ with st.sidebar:
                     df['Total'] = df['correct'] + df['wrong']
                     df['正答率'] = (df['correct'] / df['Total'] * 100).fillna(0).round(1)
                     st.dataframe(df[['subject', 'q', 'correct', 'wrong', '正答率']], use_container_width=True)
-                else: st.info("データがありません。")
+                else: st.info("データなし")
             
             with p_tabs[1]:
                 st.write("### 問題エディタ")
                 all_q_edit = load_questions_from_gsheet()
                 if all_q_edit:
+                    # スマート呼び出し
+                    if 'mode' in st.session_state and st.session_state.index < len(st.session_state.questions):
+                        cur_q_data = st.session_state.questions[st.session_state.index]
+                        if st.button("📢 今解いている問題をセット"):
+                            st.session_state["p_edit_sub"] = st.session_state.mode
+                            st.session_state["p_edit_q"] = cur_q_data['q']
+                            st.rerun()
+                    
+                    st.divider()
                     e_sub = st.selectbox("教科を選択", list(all_q_edit.keys()), key="p_edit_sub")
                     q_list = [item['q'] for item in all_q_edit[e_sub]]
-                    e_q_orig = st.selectbox("修正する問題", q_list, key="p_edit_q")
                     
+                    default_q_idx = 0
+                    if "p_edit_q" in st.session_state and st.session_state["p_edit_q"] in q_list:
+                        default_q_idx = q_list.index(st.session_state["p_edit_q"])
+                    
+                    e_q_orig = st.selectbox("修正対象を選択", q_list, index=default_q_idx, key="p_edit_q_manual")
                     target = next(item for item in all_q_edit[e_sub] if item['q'] == e_q_orig)
-                    new_q = st.text_input("問題文を修正", value=target['q'])
-                    new_a = st.text_input("正解を修正", value=target['a'])
+                    new_q = st.text_input("問題文", value=target['q'], key="txt_q")
+                    new_a = st.text_input("正解", value=target['a'], key="txt_a")
                     
                     if st.button("スプレッドシートに保存"):
                         if update_question_in_gsheet(e_sub, e_q_orig, new_q, new_a):
-                            st.success("✅ 修正を保存しました！")
-                            st.cache_data.clear(); time.sleep(1); st.rerun()
+                            st.success("✅ 修正完了！")
+                            st.cache_data.clear()
+                            if "p_edit_q" in st.session_state: del st.session_state["p_edit_q"]
+                            time.sleep(1); st.rerun()
     st.divider(); st.write("<br>" * 10, unsafe_allow_html=True)
 
 # --- 3. メイン画面 ---
@@ -235,7 +249,6 @@ if 'mode' not in st.session_state:
             st.session_state.index, st.session_state.session_streak, st.session_state.session_max_streak, st.session_state.pending_results = 0, 0, 0, []
             st.session_state.show_result = False; st.rerun()
 else:
-    # クイズ進行ロジックは Ver.173 を継承
     total_q = len(st.session_state.questions)
     if st.session_state.index >= total_q:
         sync_results_to_gsheet(); st.balloons(); st.success("特訓終了！")
