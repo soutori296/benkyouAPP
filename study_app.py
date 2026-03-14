@@ -25,7 +25,6 @@ def load_questions_from_gsheet():
         organized = {}
         for row in data:
             cat = row.get('category', '共通')
-            # 数学の並び替え除外
             if "数学" in cat and "/" in str(row.get('q', '')): continue
             if cat not in organized: organized[cat] = []
             organized[cat].append({"rank": row.get('rank', 'A'), "q": str(row.get('q', '')), "a": str(row.get('a', '')), "h": str(row.get('h', ''))})
@@ -115,7 +114,7 @@ with st.sidebar:
     st.title("📊 学習状況")
     if st.button("🔄 データを更新", use_container_width=True): st.cache_data.clear(); st.rerun()
 
-    # 教科別進捗を表示
+    # 教科別進捗
     res = load_all_stats_cached(); hist = res.get("history", {})
     if hist:
         subjects = sorted(list(set(v.get("subject", "不明") for v in hist.values())))
@@ -125,41 +124,40 @@ with st.sidebar:
             rate = int(total_c / total_t * 100) if total_t > 0 else 0
             st.write(f"**{sub}**: {rate}点 ({total_t}回)"); st.progress(rate / 100)
     
-    # お子様の目が届きにくい下部へ移動
-    st.write("---")
-    st.caption("Admin Menu")
+    # ★ 改良：広大な空白（スペーサー）を挿入してメニューを押し下げる
+    st.write("<br>" * 15, unsafe_allow_html=True)
+    st.divider()
     
-    # ★ 改良：修正機能を一番下へ＆閉じた状態(expanded=False)に変更
-    if 'mode' in st.session_state and st.session_state.index < len(st.session_state.questions):
-        idx = st.session_state.index
-        cur_q = st.session_state.questions[idx]
-        with st.expander("🛠️ メンテナンス", expanded=False):
-            st.warning("※保護者用メニュー")
-            new_q = st.text_input("問題修正", value=cur_q['q'], key=f"inst_q_{idx}")
-            new_a = st.text_input("正解修正", value=cur_q['a'], key=f"inst_a_{idx}")
-            if st.button("保存して反映", key=f"btn_inst_{idx}"):
-                if update_question_in_gsheet(cur_q['q'], new_q, new_a):
-                    st.session_state.questions[idx]['q'] = new_q
-                    st.session_state.questions[idx]['a'] = new_a
-                    st.cache_data.clear()
-                    st.success("完了！")
-                    time.sleep(0.5); st.rerun()
+    # ★ 改良：秘密のスイッチ。これにチェックを入れないと中身が見えない
+    is_admin = st.checkbox("⚙️ メンテナンスモード", value=False)
     
-    with st.expander("🔍 過去問検索", expanded=False):
-        search_txt = st.text_input("検索")
-        if search_txt:
-            all_qs = load_questions_from_gsheet()
-            for cat, q_list in all_qs.items():
-                for q_item in q_list:
-                    if search_txt in q_item['q']:
-                        st.write(f"({cat})")
-                        n_q = st.text_input("問題", value=q_item['q'], key=f"srch_q_{q_item['q']}")
-                        n_a = st.text_input("正解", value=q_item['a'], key=f"srch_a_{q_item['q']}")
-                        if st.button("保存", key=f"btn_srch_{q_item['q']}"):
-                            if update_question_in_gsheet(q_item['q'], n_q, n_a):
-                                st.success("完了！"); st.cache_data.clear()
+    if is_admin:
+        st.warning("※正解が見えるため注意")
+        if 'mode' in st.session_state and st.session_state.index < len(st.session_state.questions):
+            idx = st.session_state.index; cur_q = st.session_state.questions[idx]
+            with st.expander("🛠️ 今の問題を修正", expanded=True):
+                new_q = st.text_input("問題修正", value=cur_q['q'], key=f"inst_q_{idx}")
+                new_a = st.text_input("正解修正", value=cur_q['a'], key=f"inst_a_{idx}")
+                if st.button("保存して即反映", key=f"btn_inst_{idx}"):
+                    if update_question_in_gsheet(cur_q['q'], new_q, new_a):
+                        st.session_state.questions[idx]['q'] = new_q; st.session_state.questions[idx]['a'] = new_a
+                        st.cache_data.clear(); st.success("反映完了！"); time.sleep(0.5); st.rerun()
+        
+        with st.expander("🔍 全問題から検索"):
+            search_txt = st.text_input("検索ワード")
+            if search_txt:
+                all_qs = load_questions_from_gsheet()
+                for cat, q_list in all_qs.items():
+                    for q_item in q_list:
+                        if search_txt in q_item['q']:
+                            st.write(f"({cat})")
+                            n_q = st.text_input("問題", value=q_item['q'], key=f"srch_q_{q_item['q']}")
+                            n_a = st.text_input("正解", value=q_item['a'], key=f"srch_a_{q_item['q']}")
+                            if st.button("保存", key=f"btn_srch_{q_item['q']}"):
+                                if update_question_in_gsheet(q_item['q'], n_q, n_a):
+                                    st.success("完了！"); st.cache_data.clear()
 
-# --- 3. メイン画面 ---
+# --- 3. メイン画面（以下省略、Ver.146と同じ） ---
 if 'mode' not in st.session_state:
     st.title("🛡️ 70点奪取特訓")
     all_q = load_questions_from_gsheet()
@@ -181,7 +179,6 @@ if 'mode' not in st.session_state:
             st.session_state.index, st.session_state.score, st.session_state.session_streak = 0, 0, 0
             st.session_state.show_result = False; st.rerun()
 else:
-    # クイズ進行ロジックは Ver.145 と同様
     total_q = len(st.session_state.questions)
     if st.session_state.index >= total_q:
         st.balloons(); st.success("特訓終了！")
@@ -201,7 +198,6 @@ else:
             main_p, hint_p = parse_q_display(q['q']); st.subheader(main_p)
             if hint_p: st.info(f"💡 {hint_p}")
             canvas_res = st_canvas(stroke_width=9, height=180, width=700, key=f"c_{st.session_state.index}")
-            
             c1, c2 = st.columns(2)
             with c1:
                 if not st.session_state.show_options:
