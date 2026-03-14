@@ -25,6 +25,9 @@ def load_questions_from_gsheet():
         organized = {}
         for row in data:
             cat = row.get('category', '共通')
+            # ★ 改良：数学の場合は「/」が含まれる問題（並び替え）を最初から除外
+            if "数学" in cat and "/" in str(row.get('q', '')):
+                continue
             if cat not in organized: organized[cat] = []
             organized[cat].append({"rank": row.get('rank', 'A'), "q": str(row.get('q', '')), "a": str(row.get('a', '')), "h": str(row.get('h', ''))})
         return organized
@@ -68,10 +71,8 @@ def save_stat(q_text, is_correct, rank, subject):
                 sh.append_row([q_text, 1 if is_correct else 0, 0 if is_correct else 1, rank, subject])
         except: pass
 
-# ★ 改良：巧妙なダミー生成エンジン
 def generate_clever_distractors(correct_ans, subject_mode, all_answers):
     distractors = set()
-    # 1. 数学の場合：計算ミス系
     if "数学" in subject_mode:
         try:
             val = float(correct_ans)
@@ -80,26 +81,16 @@ def generate_clever_distractors(correct_ans, subject_mode, all_answers):
             distractors.add(str(int(-val) if val.is_integer() else -val))
             distractors.add("0")
         except:
-            # 文字式などの場合：符号反転や係数違い
             if "-" in correct_ans: distractors.add(correct_ans.replace("-", ""))
             else: distractors.add("-" + correct_ans)
             distractors.add(re.sub(r'\d+', lambda x: str(int(x.group())+1), correct_ans))
-    
-    # 2. 英語/共通：他の問題の正解から引っ張る（もっともらしい単語）
     other_ans = [a for a in all_answers if a.lower() != correct_ans.lower()]
     if other_ans:
         random.shuffle(other_ans)
         for a in other_ans:
             if len(distractors) >= 3: break
             distractors.add(a)
-    
-    # 3. 足りない場合は固定プール
-    defaults = ["is", "do", "have", "not", "will", "did", "1", "x"]
-    for d in defaults:
-        if len(distractors) >= 3: break
-        if d.lower() != correct_ans.lower(): distractors.add(d)
-        
-    return list(distractors)
+    return list(distractors)[:3]
 
 def setup_audio_engine():
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -117,7 +108,6 @@ def parse_q_display(text):
         if main_p: return main_p, hint_p
     return text, ""
 
-# セッション管理
 for k, v in {"user_ans_list": [], "show_options": False, "show_result": False, "score": 0, "index": 0, "session_streak": 0}.items():
     if k not in st.session_state: st.session_state[k] = v
 
@@ -129,20 +119,31 @@ with st.sidebar:
     st.title("📊 学習管理")
     if st.button("🔄 データを更新", use_container_width=True): st.cache_data.clear(); st.rerun()
     
-    # 修正機能
-    with st.expander("📝 問題修正"):
+    # ★ 改良：表示中の問題を優先修正
+    if 'mode' in st.session_state and st.session_state.index < len(st.session_state.questions):
+        cur_q = st.session_state.questions[st.session_state.index]
+        with st.expander("🛠️ 今表示中の問題を修正", expanded=True):
+            new_q = st.text_input("問題文を修正", value=cur_q['q'], key="instant_q")
+            new_a = st.text_input("答えを修正", value=cur_q['a'], key="instant_a")
+            if st.button("この問題をスプレッドシートに保存"):
+                if update_question_in_gsheet(cur_q['q'], new_q, new_a):
+                    st.success("保存しました！更新ボタンを押すと反映されます。")
+                    st.cache_data.clear()
+                else: st.error("保存失敗")
+    
+    with st.expander("🔍 過去の問題を検索して修正"):
         search_txt = st.text_input("検索ワード")
         if search_txt:
             all_qs = load_questions_from_gsheet()
             for cat, q_list in all_qs.items():
                 for q_item in q_list:
                     if search_txt in q_item['q']:
-                        new_q = st.text_input("問題文", value=q_item['q'], key=f"ed_q_{q_item['q']}")
-                        new_a = st.text_input("正解", value=q_item['a'], key=f"ed_a_{q_item['q']}")
-                        if st.button("保存", key=f"btn_{q_item['q']}"):
-                            if update_question_in_gsheet(q_item['q'], new_q, new_a):
+                        st.write(f"--- ({cat}) ---")
+                        n_q = st.text_input("問題文", value=q_item['q'], key=f"srch_q_{q_item['q']}")
+                        n_a = st.text_input("正解", value=q_item['a'], key=f"srch_a_{q_item['q']}")
+                        if st.button("保存", key=f"btn_srch_{q_item['q']}"):
+                            if update_question_in_gsheet(q_item['q'], n_q, n_a):
                                 st.success("完了！"); st.cache_data.clear()
-                            else: st.error("失敗")
 
     st.divider()
     res = load_all_stats_cached(); hist = res.get("history", {})
@@ -160,7 +161,11 @@ if 'mode' not in st.session_state:
     all_q = load_questions_from_gsheet()
     if all_q:
         sub = st.selectbox("特訓セットを選択", list(all_q.keys()))
-        diff = st.radio("モード選択", ["ミックス", "🧩 並べ替え特訓", "🔥 苦手克服"], horizontal=True)
+        diff_options = ["ミックス", "🔥 苦手克服"]
+        # ★ 改良：数学以外の場合のみ並べ替えを表示
+        if "数学" not in sub: diff_options.insert(1, "🧩 並べ替え特訓")
+        
+        diff = st.radio("モード選択", diff_options, horizontal=True)
         if st.button("特訓開始！", use_container_width=True):
             st.session_state.mode = sub; data = all_q.get(sub, [])
             if "並べ替え" in diff: filtered = [q for q in data if "/" in q['q']]
@@ -170,11 +175,11 @@ if 'mode' not in st.session_state:
                 if not filtered: st.warning("苦手なし。"); filtered = data
             else: filtered = data
             random.shuffle(filtered); st.session_state.questions = filtered[:50]
-            # ★ セット内の全正解リストを作成（ダミー生成用）
             st.session_state.all_ans_in_set = [q['a'] for q in data]
             st.session_state.index, st.session_state.score, st.session_state.session_streak = 0, 0, 0
             st.session_state.show_result = False; st.rerun()
 else:
+    # クイズ進行ロジック（Ver.143と同様）
     total_q = len(st.session_state.questions)
     if st.session_state.index >= total_q:
         st.balloons(); st.success("特訓終了！")
@@ -195,15 +200,14 @@ else:
             if hint_p: st.info(f"💡 {hint_p}")
             canvas_res = st_canvas(stroke_width=9, height=180, width=700, key=f"c_{st.session_state.index}")
             
-            col1, col2 = st.columns(2)
-            with col1:
+            c1, c2 = st.columns(2)
+            with c1:
                 if not st.session_state.show_options:
                     if st.button("🔍 判定して選択肢を表示", use_container_width=True):
                         if not is_order_q and (not canvas_res.json_data or len(canvas_res.json_data.get("objects", [])) == 0):
                             st.warning("⚠️ 手書きして！")
                         else: st.session_state.show_options = True; st.rerun()
-            with col2:
-                # ★ 改良：中止ボタンをメイン画面に設置
+            with c2:
                 if st.button("🏳️ 降参（中止）", use_container_width=True): st.session_state.clear(); st.rerun()
 
             if st.session_state.show_options:
@@ -227,12 +231,10 @@ else:
                             time.sleep(0.5); st.session_state.show_result = True; st.rerun()
                 else:
                     if 'cur_opts' not in st.session_state or st.session_state.get('last_q_id') != st.session_state.index:
-                        # ★ 巧妙なダミーを生成
                         dummies = generate_clever_distractors(q['a'], st.session_state.mode, st.session_state.all_ans_in_set)
                         opts = list(set([q['a']] + dummies))
                         st.session_state.cur_opts = random.sample(opts, len(opts))
                         st.session_state.last_q_id = st.session_state.index
-                    
                     cols = st.columns(len(st.session_state.cur_opts))
                     for i, opt in enumerate(st.session_state.cur_opts):
                         if cols[i].button(opt, key=f"o_{i}", use_container_width=True):
