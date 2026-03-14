@@ -11,7 +11,7 @@ from google.oauth2.service_account import Credentials
 
 # --- 1. st.set_page_config ---
 st.set_page_config(
-    page_title="高校受験対策 🛡️ 並べ替え修正・完全版", 
+    page_title="🛡️　高校受験対策", 
     layout="wide", 
     initial_sidebar_state="expanded"
 )
