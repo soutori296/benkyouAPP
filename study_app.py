@@ -153,7 +153,11 @@ def parse_q_display(text):
 for k, v in {"user_ans_list": [], "show_options": False, "show_result": False, "index": 0, "session_streak": 0, "session_max_streak": 0, "pending_results": [], "p_edit_obj": None}.items():
     if k not in st.session_state: st.session_state[k] = v
 
-st.set_page_config(page_title="高校受験対策", layout="wide")
+st.set_page_config(
+    page_title="高校受験対策", 
+    layout="wide", 
+    initial_sidebar_state="expanded"  # ← これを追加（強制展開）
+)
 setup_audio()
 
 # CSS修正：サイドバーを出すボタン(header内のボタン)を消さないように設定
