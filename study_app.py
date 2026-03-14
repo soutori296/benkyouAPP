@@ -138,25 +138,16 @@ def parse_q_display(text):
 for k, v in {"user_ans_list": [], "show_options": False, "show_result": False, "index": 0, "session_streak": 0, "session_max_streak": 0, "pending_results": []}.items():
     if k not in st.session_state: st.session_state[k] = v
 
-# アプリ設定
 st.set_page_config(page_title="高校受験対策", layout="wide")
 setup_audio_engine()
 
-# ★ 改良：上部の空白を削るためのCSS注入
-st.markdown("""
-    <style>
-    .block-container {
-        padding-top: 1rem !important;
-        padding-bottom: 0rem !important;
-    }
-    header {visibility: hidden;}
-    </style>
-    """, unsafe_allow_html=True)
+# 余白削りCSS
+st.markdown("""<style>.block-container {padding-top: 1rem !important; padding-bottom: 0rem !important;} header {visibility: hidden;}</style>""", unsafe_allow_html=True)
 
 # --- 2. サイドバー ---
 with st.sidebar:
     st.title("📊 学習記録")
-    if st.button("🔄 最新データに更新", use_container_width=True):
+    if st.button("🔄 データを更新", use_container_width=True):
         st.cache_data.clear(); st.session_state.clear(); st.rerun()
     stats_res = load_all_stats_with_records()
     hist = stats_res["history"]; streaks = stats_res["streaks"]; last_sub = stats_res["last_sub"]
@@ -168,8 +159,7 @@ with st.sidebar:
     for k, v in streaks.items():
         if "max_streak_" in k: st.caption(f"{k.replace('max_streak_', '')}: {v}連勝")
     st.divider(); st.write("<br>" * 30, unsafe_allow_html=True)
-    if st.checkbox("⚙️ メンテナンス", value=False):
-        pass
+    if st.checkbox("⚙️ メンテナンス", value=False): pass
 
 # --- 3. メイン画面 ---
 if 'mode' not in st.session_state:
@@ -201,52 +191,58 @@ else:
         if st.button("TOPへ戻る"): st.session_state.clear(); st.rerun()
     else:
         q = st.session_state.questions[st.session_state.index]; is_order_q = "/" in q['q']
-        if st.session_state.show_result:
-            if st.session_state.last_is_correct:
-                st.success("⭕ 正解！"); time.sleep(1.0)
-                st.session_state.index += 1; st.session_state.show_result = False; st.session_state.show_options = False; st.session_state.user_ans_list = []; st.rerun()
-            else:
-                st.error(f"❌ 正解は: {q['a']}")
-                if st.button("次へ ➡️"):
-                    st.session_state.index += 1; st.session_state.show_result = False; st.session_state.show_options = False; st.session_state.user_ans_list = []; st.rerun()
-        else:
+        col_left, col_right = st.columns([1.5, 1])
+
+        with col_left:
             st.write(f"残り {total_q - st.session_state.index} 問")
             main_p, hint_p = parse_q_display(q['q']); st.subheader(main_p)
             if hint_p: st.info(f"💡 {hint_p}")
             
-            # ★ 改良：幅を固定数値(1000)にし、背景を少し変えて枠を明示
+            # ★ 改良：数学なら高さを500px、それ以外は250pxに自動調整
+            canvas_height = 500 if "数学" in st.session_state.mode else 250
             canvas_res = st_canvas(
-                stroke_width=9, height=250, width=1000, 
+                stroke_width=9, height=canvas_height, width=800, 
                 key=f"c_{st.session_state.index}", background_color="#f0f2f6"
             )
-            
-            c1, c2 = st.columns(2)
-            with c1:
-                if not st.session_state.show_options:
-                    if st.button("🔍 判定して選択肢を表示", use_container_width=True):
-                        if not is_order_q and (not canvas_res.json_data or len(canvas_res.json_data.get("objects", [])) < 2):
-                            st.error("☝️ 2画以上書いてね！")
-                        else: st.session_state.show_options = True; st.rerun()
-            with c2:
-                if st.button("🏳️ 中止して保存", use_container_width=True):
-                    sync_results_to_gsheet(); st.session_state.clear(); st.rerun()
-            if st.session_state.show_options:
-                st.divider()
-                if is_order_q:
-                    words = [w.strip() for w in main_p.replace("(","").replace(")","").replace("?","").replace(".","").split("/") if w.strip()]
-                    current = st.session_state.user_ans_list; disp = [w for w in words if w not in current]
-                    if disp:
-                        cols = st.columns(min(len(disp), 5))
+
+        with col_right:
+            st.write("---")
+            if st.session_state.show_result:
+                if st.session_state.last_is_correct:
+                    st.success("⭕ 正解！")
+                    if st.button("次へ進む ➡️", use_container_width=True):
+                        st.session_state.index += 1; st.session_state.show_result = False; st.session_state.show_options = False; st.session_state.user_ans_list = []; st.rerun()
+                else:
+                    st.error(f"❌ 正解は:\n\n**{q['a']}**")
+                    if st.button("次へ進む ➡️", use_container_width=True):
+                        st.session_state.index += 1; st.session_state.show_result = False; st.session_state.show_options = False; st.session_state.user_ans_list = []; st.rerun()
+            else:
+                c1, c2 = st.columns(2)
+                with c1:
+                    if not st.session_state.show_options:
+                        if st.button("🔍 判定へ", use_container_width=True):
+                            if not is_order_q and (not canvas_res.json_data or len(canvas_res.json_data.get("objects", [])) < 2):
+                                st.error("☝️ 2画以上書いてね！")
+                            else: st.session_state.show_options = True; st.rerun()
+                with c2:
+                    if st.button("🏳️ 中止保存", use_container_width=True):
+                        sync_results_to_gsheet(); st.session_state.clear(); st.rerun()
+                
+                if st.session_state.show_options:
+                    st.write("**答えを選択：**")
+                    if is_order_q:
+                        words = [w.strip() for w in main_p.replace("(","").replace(")","").replace("?","").replace(".","").split("/") if w.strip()]
+                        current = st.session_state.user_ans_list; disp = [w for w in words if w not in current]
                         for i, w in enumerate(disp):
-                            if cols[i % 5].button(w, key=f"w_{i}", use_container_width=True): st.session_state.user_ans_list.append(w); st.rerun()
-                    if current:
-                        st.write(f"解答: {' '.join(current)}")
+                            if st.button(w, key=f"w_{i}", use_container_width=True):
+                                st.session_state.user_ans_list.append(w); st.rerun()
+                        st.markdown(f"**解答:** {' '.join(current)}")
                         bc1, bc2 = st.columns(2)
                         with bc1:
-                            if st.button("⬅️ 1つ戻す", use_container_width=True):
+                            if st.button("⬅️ 戻す", use_container_width=True):
                                 if st.session_state.user_ans_list: st.session_state.user_ans_list.pop(); st.rerun()
                         with bc2:
-                            if st.button("🗑️ 最初から", use_container_width=True):
+                            if st.button("🗑️ クリア", use_container_width=True):
                                 st.session_state.user_ans_list = []; st.rerun()
                         if len(current) == len(words):
                             is_ok = " ".join(current).lower() == q['a'].lower()
@@ -256,17 +252,16 @@ else:
                                 st.session_state.session_streak += 1; st.session_state.session_max_streak = max(st.session_state.session_max_streak, st.session_state.session_streak)
                             else: st.session_state.session_streak = 0
                             st.session_state.last_is_correct = is_ok; time.sleep(0.5); st.session_state.show_result = True; st.rerun()
-                else:
-                    if 'cur_opts' not in st.session_state or st.session_state.get('last_q_id') != st.session_state.index:
-                        opts = [q['a']] + generate_clever_distractors(q['a'], st.session_state.mode, st.session_state.all_ans_in_set)
-                        st.session_state.cur_opts = random.sample(list(set(opts)), len(list(set(opts)))); st.session_state.last_q_id = st.session_state.index
-                    cols = st.columns(len(st.session_state.cur_opts))
-                    for i, opt in enumerate(st.session_state.cur_opts):
-                        if cols[i].button(opt, key=f"o_{i}", use_container_width=True):
-                            is_ok = (opt.lower() == str(q['a']).lower())
-                            st.session_state.pending_results.append({'q': q['q'], 'is_ok': is_ok, 'rank': q.get('rank','A'), 'subject': st.session_state.mode})
-                            st.components.v1.html(f"<script>window.parent.playJudge({str(is_ok).lower()});</script>", height=0)
-                            if is_ok:
-                                st.session_state.session_streak += 1; st.session_state.session_max_streak = max(st.session_state.session_max_streak, st.session_state.session_streak)
-                            else: st.session_state.session_streak = 0
-                            st.session_state.last_is_correct = is_ok; time.sleep(0.5); st.session_state.show_result = True; st.rerun()
+                    else:
+                        if 'cur_opts' not in st.session_state or st.session_state.get('last_q_id') != st.session_state.index:
+                            opts = [q['a']] + generate_clever_distractors(q['a'], st.session_state.mode, st.session_state.all_ans_in_set)
+                            st.session_state.cur_opts = random.sample(list(set(opts)), len(list(set(opts)))); st.session_state.last_q_id = st.session_state.index
+                        for i, opt in enumerate(st.session_state.cur_opts):
+                            if st.button(opt, key=f"o_{i}", use_container_width=True):
+                                is_ok = (opt.lower() == str(q['a']).lower())
+                                st.session_state.pending_results.append({'q': q['q'], 'is_ok': is_ok, 'rank': q.get('rank','A'), 'subject': st.session_state.mode})
+                                st.components.v1.html(f"<script>window.parent.playJudge({str(is_ok).lower()});</script>", height=0)
+                                if is_ok:
+                                    st.session_state.session_streak += 1; st.session_state.session_max_streak = max(st.session_state.session_max_streak, st.session_state.session_streak)
+                                else: st.session_state.session_streak = 0
+                                st.session_state.last_is_correct = is_ok; time.sleep(0.5); st.session_state.show_result = True; st.rerun()
