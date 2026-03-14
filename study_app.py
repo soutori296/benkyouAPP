@@ -18,29 +18,18 @@ def get_gsheet_client():
         except: return None
     return None
 
-# ★ 改良：見出し(ヘッダー)を自動作成し、読み取りを安定させる
-@st.cache_data(ttl=300, show_spinner="データを読み込んでいます...")
+@st.cache_data(ttl=300, show_spinner="読込中...")
 def load_all_stats_cached():
     client = get_gsheet_client()
     if not client: return {"history": {}, "status": "no_client"}
     try:
         sh = client.open("study_stats_db").sheet1
-        # 1行目が空なら見出しを挿入
         if not sh.cell(1, 1).value:
             sh.insert_row(["q", "correct", "wrong", "rank", "subject"], 1)
             return {"history": {}, "status": "ok"}
-            
         data = sh.get_all_records()
-        history = {}
-        for row in data:
-            q_text = str(row.get('q', ''))
-            if q_text:
-                history[q_text] = {
-                    "correct": int(row.get('correct', 0) or 0),
-                    "wrong": int(row.get('wrong', 0) or 0), 
-                    "rank": str(row.get('rank', 'A')),
-                    "subject": str(row.get('subject', '不明'))
-                }
+        history = {str(row['q']): {"correct": int(row['correct'] or 0), "wrong": int(row['wrong'] or 0), 
+                                  "rank": str(row.get('rank', 'A')), "subject": str(row.get('subject', '不明'))} for row in data if row.get('q')}
         return {"history": history, "status": "ok"}
     except Exception as e:
         return {"history": {}, "status": "error", "message": str(e)}
@@ -50,10 +39,6 @@ def save_stat(q_text, is_correct, rank, subject):
     if client:
         try:
             sh = client.open("study_stats_db").sheet1
-            # 保存前にも見出しチェック
-            if not sh.cell(1, 1).value:
-                sh.insert_row(["q", "correct", "wrong", "rank", "subject"], 1)
-            
             cell = sh.find(q_text)
             if cell:
                 row = cell.row
@@ -81,6 +66,11 @@ def parse_q_display(text):
         if main_p: return main_p, hint_p
     return text, ""
 
+# セッション初期化
+if "questions_data" not in st.session_state and os.path.exists(QUESTIONS_FILE):
+    with open(QUESTIONS_FILE, "r", encoding="utf-8") as f:
+        st.session_state.questions_data = json.load(f)
+
 for k, v in {"user_ans_list": [], "show_options": False, "show_result": False, 
              "last_is_correct": False, "score": 0, "index": 0, "session_streak": 0}.items():
     if k not in st.session_state: st.session_state[k] = v
@@ -88,40 +78,66 @@ for k, v in {"user_ans_list": [], "show_options": False, "show_result": False,
 st.set_page_config(page_title="70点マスター", layout="centered")
 setup_audio_engine()
 
+# --- 2. サイドバー：メンテナンス機能 ---
 with st.sidebar:
-    st.title("📊 学習記録")
-    if st.button("🔄 最新データに更新", use_container_width=True):
-        st.cache_data.clear()
-        st.rerun()
+    st.title("📊 学習管理")
+    if st.button("🔄 データを更新", use_container_width=True):
+        st.cache_data.clear(); st.rerun()
 
     res = load_all_stats_cached()
     hist = res.get("history", {})
     
-    if res["status"] == "ok":
-        if hist:
-            subjects = set(v.get("subject", "不明") for v in hist.values())
-            for sub in sorted(subjects):
-                sub_qs = [v for v in hist.values() if v.get("subject") == sub]
-                total_t = sum(v["correct"] + v["wrong"] for v in sub_qs)
-                total_c = sum(v["correct"] for v in sub_qs)
-                rate = int(total_c / total_t * 100) if total_t > 0 else 0
-                st.write(f"**{sub}**: {rate}点 ({total_t}回)")
-                st.progress(rate / 100)
+    # 教科別表示
+    if hist:
+        subjects = sorted(list(set(v.get("subject", "不明") for v in hist.values())))
+        for sub in subjects:
+            sub_qs = [v for v in hist.values() if v.get("subject") == sub]
+            total_t = sum(v["correct"] + v["wrong"] for v in sub_qs)
+            total_c = sum(v["correct"] for v in sub_qs)
+            rate = int(total_c / total_t * 100) if total_t > 0 else 0
+            st.write(f"**{sub}**: {rate}点 ({total_t}回)")
+            st.progress(rate / 100)
+    
+    st.divider()
+    
+    # ★ 苦手問題ダウンロード
+    with st.expander("📥 苦手問題の出力"):
+        weaks = [f"【{v['subject']}】{q} (ミス:{v['wrong']}回)" for q, v in hist.items() if v['wrong'] > 0]
+        if weaks:
+            weak_text = "\n".join(weaks)
+            st.download_button("苦手リストをダウンロード(.txt)", weak_text, file_name="weak_list.txt")
         else:
-            st.info("💡 1問解くと、ここに成績が表示されます！")
-    elif res["status"] == "error":
-        st.error(f"⚠️ 読み込みエラー: {res.get('message')}")
+            st.write("苦手な問題はまだありません。")
 
-    if 'mode' in st.session_state:
+    # ★ 問題文の修正
+    with st.expander("📝 問題文を修正する"):
+        st.warning("修正後は下部のJSONをダウンロードしてGitHubへ反映させてください。")
+        search_q = st.text_input("修正したい問題（キーワード）")
+        if search_q and "questions_data" in st.session_state:
+            found = False
+            for cat, q_list in st.session_state.questions_data.items():
+                for i, q_item in enumerate(q_list):
+                    if search_q in q_item['q']:
+                        new_q = st.text_input(f"問題文の変更 ({cat})", value=q_item['q'], key=f"edit_q_{i}")
+                        new_a = st.text_input(f"答えの変更", value=q_item['a'], key=f"edit_a_{i}")
+                        if st.button("この修正を保存", key=f"btn_{i}"):
+                            st.session_state.questions_data[cat][i]['q'] = new_q
+                            st.session_state.questions_data[cat][i]['a'] = new_a
+                            st.success("修正しました！下のJSONを保存してください。")
+                        found = True; break
+            if not found: st.write("見つかりません。")
+
+    # ★ 最新JSONの書き出し
+    if "questions_data" in st.session_state:
         st.divider()
-        st.success(f"⚔️ **{st.session_state.session_streak}** 連勝中！")
-        if st.button("🔴 中止"): st.session_state.clear(); st.rerun()
+        json_str = json.dumps(st.session_state.questions_data, ensure_ascii=False, indent=2)
+        st.download_button("✅ 修正済みのquestions.jsonを保存", json_str, file_name="questions.json", use_container_width=True)
 
 # --- 3. メイン画面 ---
 if 'mode' not in st.session_state:
     st.title("🛡️ yoshi式・70点奪取特訓")
-    if os.path.exists(QUESTIONS_FILE):
-        with open(QUESTIONS_FILE, "r", encoding="utf-8") as f: all_q = json.load(f)
+    if "questions_data" in st.session_state:
+        all_q = st.session_state.questions_data
         sub = st.selectbox("特訓セットを選択", list(all_q.keys()))
         diff = st.radio("モード選択", ["ミックス", "🧩 並べ替え特訓", "基礎(Rank A)", "標準(Rank B)", "難問(Rank C)", "🔥 苦手克服"], horizontal=True)
         if st.button("特訓開始！", use_container_width=True):
