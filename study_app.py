@@ -20,26 +20,32 @@ def get_gsheet_client():
             st.error(f"認証エラー: {e}")
     return None
 
-# ★ 改良：統計データの読み込みと科目別集計
+# ★ 改良：最新データの強制読み込み
 def load_all_stats():
     client = get_gsheet_client()
     if client:
         try:
             sh = client.open("study_stats_db").sheet1
             data = sh.get_all_records()
-            # もしデータが空（ヘッダーのみ等）の場合は初期化
             if not data:
-                # 1行目にヘッダーを書き込み
-                if not sh.cell(1, 1).value:
-                    sh.insert_row(["q", "correct", "wrong", "rank", "subject"], 1)
-                return {"history": {}, "streak": 0}
+                return {"history": {}}
             
-            history = {row['q']: {"correct": int(row['correct'] or 0), "wrong": int(row['wrong'] or 0), 
-                                  "rank": row.get('rank', 'A'), "subject": row.get('subject', '不明')} for row in data}
+            # 各列のデータを数値として確実に処理
+            history = {}
+            for row in data:
+                q_text = str(row.get('q', ''))
+                if q_text:
+                    history[q_text] = {
+                        "correct": int(row.get('correct', 0) or 0),
+                        "wrong": int(row.get('wrong', 0) or 0), 
+                        "rank": str(row.get('rank', 'A')),
+                        "subject": str(row.get('subject', '不明'))
+                    }
             return {"history": history}
-        except: return {"history": {}}
+        except Exception as e:
+            st.sidebar.warning(f"読込中... ({e})")
+            return {"history": {}}
     
-    # ローカル用
     if os.path.exists(STATS_FILE):
         with open(STATS_FILE, "r", encoding="utf-8") as f: return json.load(f)
     return {"history": {}}
@@ -49,11 +55,9 @@ def save_stat(q_text, is_correct, rank, subject):
     if client:
         try:
             sh = client.open("study_stats_db").sheet1
-            # 既存の行を探す
             cell = sh.find(q_text)
             if cell:
                 row = cell.row
-                # 指定の列を更新（2列目:正解数, 3列目:ミス数）
                 c_val = int(sh.cell(row, 2).value or 0) + (1 if is_correct else 0)
                 w_val = int(sh.cell(row, 3).value or 0) + (0 if is_correct else 1)
                 sh.update_cell(row, 2, c_val)
@@ -62,7 +66,6 @@ def save_stat(q_text, is_correct, rank, subject):
                 sh.append_row([q_text, 1 if is_correct else 0, 0 if is_correct else 1, rank, subject])
         except: pass
     else:
-        # ローカル用
         data = load_all_stats()
         if q_text not in data["history"]: data["history"][q_text] = {"correct": 0, "wrong": 0, "rank": rank, "subject": subject}
         if is_correct: data["history"][q_text]["correct"] += 1
@@ -92,25 +95,28 @@ for k, v in {"user_ans_list": [], "show_options": False, "show_result": False,
 st.set_page_config(page_title="70点マスター", layout="centered")
 setup_audio_engine()
 
-# --- 2. サイドバー（統計表示復活） ---
+# --- 2. サイドバー ---
 with st.sidebar:
-    st.info("📊 スプレッドシート同期中")
+    st.title("📊 学習記録")
+    # ★ 強制リロードボタン
+    if st.button("🔄 データを更新する", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
+
     stats_data = load_all_stats()
     hist = stats_data.get("history", {})
     
     if hist:
-        # 科目ごとの集計
         subjects = set(v.get("subject", "不明") for v in hist.values())
         for sub in sorted(subjects):
             sub_qs = [v for v in hist.values() if v.get("subject") == sub]
-            total_tries = sum(v["correct"] + v["wrong"] for v in sub_qs)
-            total_correct = sum(v["correct"] for v in sub_qs)
-            rate = int(total_correct / total_tries * 100) if total_tries > 0 else 0
-            
-            st.write(f"**{sub}**: {rate}点 ({total_tries}回回答)")
+            total_t = sum(v["correct"] + v["wrong"] for v in sub_qs)
+            total_c = sum(v["correct"] for v in sub_qs)
+            rate = int(total_c / total_t * 100) if total_t > 0 else 0
+            st.write(f"**{sub}**: {rate}点 ({total_t}回)")
             st.progress(rate / 100)
     else:
-        st.write("まだ記録がありません。特訓を開始しましょう！")
+        st.write("スプレッドシートからデータを読み込んでいます...")
 
     if 'mode' in st.session_state:
         st.divider()
@@ -123,17 +129,24 @@ if 'mode' not in st.session_state:
     if os.path.exists(QUESTIONS_FILE):
         with open(QUESTIONS_FILE, "r", encoding="utf-8") as f: all_q = json.load(f)
         sub = st.selectbox("特訓セットを選択", list(all_q.keys()))
-        diff = st.radio("モード選択", ["ミックス", "🧩 並べ替え特訓", "基礎(Rank A)", "標準(Rank B)", "難問(Rank C)"], horizontal=True)
+        diff = st.radio("モード選択", ["ミックス", "🧩 並べ替え特訓", "基礎(Rank A)", "標準(Rank B)", "難問(Rank C)", "🔥 苦手克服"], horizontal=True)
         if st.button("特訓開始！", use_container_width=True):
             st.session_state.mode = sub; st.session_state.diff_label = diff; data = all_q.get(sub, [])
             if "並べ替え" in diff: filtered = [q for q in data if "/" in q['q']]
             elif "Rank" in diff:
                 t = diff.split("Rank ")[1][0]; filtered = [q for q in data if q.get("rank") == t]
+            elif "苦手克服" in diff:
+                # ★ スプレッドシートからミスの多い問題を抽出
+                wrong_list = [q_t for q_t, v in hist.items() if v.get("wrong", 0) > 0]
+                filtered = [q for q in data if q['q'] in wrong_list]
+                if not filtered: st.warning("まだ苦手な問題が登録されていません！"); filtered = data
             else: filtered = data
+            
             random.shuffle(filtered); st.session_state.questions = filtered[:50]
             st.session_state.index, st.session_state.score, st.session_state.session_streak = 0, 0, 0
             st.session_state.show_result = False; st.rerun()
 else:
+    # (以下、クイズ進行ロジックはVer.136と同じ)
     total_q = len(st.session_state.questions)
     if st.session_state.index >= total_q:
         st.balloons(); st.success("特訓終了！"); 
