@@ -1,25 +1,23 @@
 import streamlit as st
 from streamlit_drawable_canvas import st_canvas
-import json, os, random, time, base64, re
+import json, os, random, time, base64, re, io
 from datetime import datetime
 import gspread
 from google.oauth2.service_account import Credentials
 
 # --- 1. 基本設定・API連携 ---
-def get_gsheet_client():
+def get_creds():
     if "gcp_service_account" in st.secrets:
-        try:
-            scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-            creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
-            return gspread.authorize(creds)
-        except: return None
+        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+        return Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
     return None
 
 @st.cache_data(ttl=300)
 def load_questions_from_gsheet():
-    client = get_gsheet_client()
-    if not client: return {}
+    creds = get_creds()
+    if not creds: return {}
     try:
+        client = gspread.authorize(creds)
         sh = client.open("study_stats_db").worksheet("questions")
         data = sh.get_all_records()
         organized = {}
@@ -32,10 +30,10 @@ def load_questions_from_gsheet():
     except: return {}
 
 def load_all_stats_with_records():
-    client = get_gsheet_client()
-    if not client: return {"history": {}, "streaks": {}, "last_sub": ""}
+    creds = get_creds()
+    if not creds: return {"history": {}, "streaks": {}, "last_sub": ""}
     try:
-        ss = client.open("study_stats_db")
+        ss = gspread.authorize(creds).open("study_stats_db")
         hist_data = ss.sheet1.get_all_records()
         history = {str(row['q']): {"correct": int(row['correct'] or 0), "wrong": int(row['wrong'] or 0), "subject": str(row.get('subject', '不明'))} for row in hist_data if row.get('q')}
         streaks = {}; last_sub = ""
@@ -50,10 +48,10 @@ def load_all_stats_with_records():
     except: return {"history": {}, "streaks": {}, "last_sub": ""}
 
 def save_last_subject(sub_name):
-    client = get_gsheet_client()
-    if client:
+    creds = get_creds()
+    if creds:
         try:
-            sh = client.open("study_stats_db").worksheet("summary")
+            sh = gspread.authorize(creds).open("study_stats_db").worksheet("summary")
             cell = sh.find("last_selected_subject")
             if cell: sh.update_cell(cell.row, 2, sub_name)
             else: sh.append_row(["last_selected_subject", sub_name])
@@ -61,11 +59,11 @@ def save_last_subject(sub_name):
 
 def sync_results_to_gsheet():
     if not st.session_state.pending_results: return
-    client = get_gsheet_client()
-    if not client: return
+    creds = get_creds()
+    if not creds: return
     with st.spinner('記録を保存中...'):
         try:
-            ss = client.open("study_stats_db")
+            ss = gspread.authorize(creds).open("study_stats_db")
             sheet = ss.sheet1
             rows = sheet.get_all_records()
             current_data = {str(r['q']): r for r in rows}
@@ -141,13 +139,13 @@ for k, v in {"user_ans_list": [], "show_options": False, "show_result": False, "
 st.set_page_config(page_title="高校受験対策", layout="wide")
 setup_audio_engine()
 
-# CSSで上部余白を極限まで削る
+# CSS調整
 st.markdown("""<style>.block-container {padding-top: 1rem !important; padding-bottom: 0rem !important;} header {visibility: hidden;}</style>""", unsafe_allow_html=True)
 
 # --- 2. サイドバー ---
 with st.sidebar:
     st.title("📊 学習記録")
-    if st.button("🔄 データを更新", use_container_width=True):
+    if st.button("🔄 最新データに更新", use_container_width=True):
         st.cache_data.clear(); st.session_state.clear(); st.rerun()
     stats_res = load_all_stats_with_records()
     hist = stats_res["history"]; streaks = stats_res["streaks"]; last_sub = stats_res["last_sub"]
@@ -158,8 +156,7 @@ with st.sidebar:
     st.write("**教科別の歴代記録**")
     for k, v in streaks.items():
         if "max_streak_" in k: st.caption(f"{k.replace('max_streak_', '')}: {v}連勝")
-    st.divider(); st.write("<br>" * 25, unsafe_allow_html=True)
-    if st.checkbox("⚙️ 管理", value=False): pass
+    st.divider(); st.write("<br>" * 20, unsafe_allow_html=True)
 
 # --- 3. メイン画面 ---
 if 'mode' not in st.session_state:
@@ -190,21 +187,31 @@ else:
         sync_results_to_gsheet(); st.balloons(); st.success("特訓終了！")
         if st.button("TOPへ戻る"): st.session_state.clear(); st.rerun()
     else:
-        q = st.session_state.questions[st.session_state.index]; is_order_q = "/" in q['q']
-        col_left, col_right = st.columns([1.5, 1])
+        q = st.session_state.questions[st.session_state.index]; is_order_q = "/" in q['q']; is_math = "数学" in st.session_state.mode
+        main_p, hint_p = parse_q_display(q['q'])
 
-        with col_left:
+        # ★ 教科別のレイアウト定義
+        if is_math:
+            # 数学：左右分割
+            col_left, col_right = st.columns([1.5, 1])
+            with col_left:
+                st.write(f"残り {total_q - st.session_state.index} 問")
+                st.subheader(main_p)
+                if hint_p: st.info(f"💡 {hint_p}")
+                canvas_res = st_canvas(stroke_width=9, height=500, width=800, key=f"c_{st.session_state.index}", background_color="#f0f2f6")
+            target_col = col_right
+        else:
+            # 英語・その他：上下積み上げ
             st.write(f"残り {total_q - st.session_state.index} 問")
-            main_p, hint_p = parse_q_display(q['q']); st.subheader(main_p)
+            st.subheader(main_p)
             if hint_p: st.info(f"💡 {hint_p}")
-            
-            canvas_h = 500 if "数学" in st.session_state.mode else 250
-            canvas_res = st_canvas(stroke_width=9, height=canvas_h, width=800, key=f"c_{st.session_state.index}", background_color="#f0f2f6")
-
-        with col_right:
+            canvas_res = st_canvas(stroke_width=9, height=250, width=1200, key=f"c_{st.session_state.index}", background_color="#f0f2f6")
             st.write("---")
+            target_col = st # そのまま下に表示
+
+        with target_col:
+            if is_math: st.write("---") # 数学の時だけ右側に区切り
             if st.session_state.show_result:
-                # ★ 改良：正解バーの中に答えをドッキング表示
                 if st.session_state.last_is_correct:
                     st.success(f"## ✨ 正解！ : {q['a']}")
                     if st.button("次へ進む ➡️", use_container_width=True, type="primary"):
@@ -215,14 +222,15 @@ else:
                     if st.button("理解した！次へ ➡️", use_container_width=True):
                         st.session_state.index += 1; st.session_state.show_result = False; st.session_state.show_options = False; st.session_state.user_ans_list = []; st.rerun()
             else:
-                c1, c2 = st.columns(2)
-                with c1:
+                # 判定・操作ボタン
+                btn_cols = st.columns(2)
+                with btn_cols[0]:
                     if not st.session_state.show_options:
                         if st.button("🔍 判定へ", use_container_width=True):
                             if not is_order_q and (not canvas_res.json_data or len(canvas_res.json_data.get("objects", [])) < 2):
                                 st.error("☝️ 2画以上書いてね！")
                             else: st.session_state.show_options = True; st.rerun()
-                with c2:
+                with btn_cols[1]:
                     if st.button("🏳️ 中止保存", use_container_width=True):
                         sync_results_to_gsheet(); st.session_state.clear(); st.rerun()
                 
@@ -231,8 +239,11 @@ else:
                     if is_order_q:
                         words = [w.strip() for w in main_p.replace("(","").replace(")","").replace("?","").replace(".","").split("/") if w.strip()]
                         current = st.session_state.user_ans_list; disp = [w for w in words if w not in current]
+                        # 英語は横に並べる
+                        opt_cols = st.columns(min(len(disp), 5)) if not is_math else [st] * len(disp)
                         for i, w in enumerate(disp):
-                            if st.button(w, key=f"w_{i}", use_container_width=True):
+                            target = opt_cols[i % 5] if not is_math else st
+                            if target.button(w, key=f"w_{i}", use_container_width=True):
                                 st.session_state.user_ans_list.append(w); st.rerun()
                         st.markdown(f"**解答:** {' '.join(current)}")
                         bc1, bc2 = st.columns(2)
@@ -254,12 +265,25 @@ else:
                         if 'cur_opts' not in st.session_state or st.session_state.get('last_q_id') != st.session_state.index:
                             opts = [q['a']] + generate_clever_distractors(q['a'], st.session_state.mode, st.session_state.all_ans_in_set)
                             st.session_state.cur_opts = random.sample(list(set(opts)), len(list(set(opts)))); st.session_state.last_q_id = st.session_state.index
-                        for i, opt in enumerate(st.session_state.cur_opts):
-                            if st.button(opt, key=f"o_{i}", use_container_width=True):
-                                is_ok = (opt.lower() == str(q['a']).lower())
-                                st.session_state.pending_results.append({'q': q['q'], 'is_ok': is_ok, 'rank': q.get('rank','A'), 'subject': st.session_state.mode})
-                                st.components.v1.html(f"<script>window.parent.playJudge({str(is_ok).lower()});</script>", height=0)
-                                if is_ok:
-                                    st.session_state.session_streak += 1; st.session_state.session_max_streak = max(st.session_state.session_max_streak, st.session_state.session_streak)
-                                else: st.session_state.session_streak = 0
-                                st.session_state.last_is_correct = is_ok; time.sleep(0.5); st.session_state.show_result = True; st.rerun()
+                        # 英語は横に並べる、数学は縦に並べる
+                        if not is_math:
+                            opt_cols = st.columns(len(st.session_state.cur_opts))
+                            for i, opt in enumerate(st.session_state.cur_opts):
+                                if opt_cols[i].button(opt, key=f"o_{i}", use_container_width=True):
+                                    is_ok = (opt.lower() == str(q['a']).lower())
+                                    st.session_state.pending_results.append({'q': q['q'], 'is_ok': is_ok, 'rank': q.get('rank','A'), 'subject': st.session_state.mode})
+                                    st.components.v1.html(f"<script>window.parent.playJudge({str(is_ok).lower()});</script>", height=0)
+                                    if is_ok:
+                                        st.session_state.session_streak += 1; st.session_state.session_max_streak = max(st.session_state.session_max_streak, st.session_state.session_streak)
+                                    else: st.session_state.session_streak = 0
+                                    st.session_state.last_is_correct = is_ok; time.sleep(0.5); st.session_state.show_result = True; st.rerun()
+                        else:
+                            for i, opt in enumerate(st.session_state.cur_opts):
+                                if st.button(opt, key=f"o_{i}", use_container_width=True):
+                                    is_ok = (opt.lower() == str(q['a']).lower())
+                                    st.session_state.pending_results.append({'q': q['q'], 'is_ok': is_ok, 'rank': q.get('rank','A'), 'subject': st.session_state.mode})
+                                    st.components.v1.html(f"<script>window.parent.playJudge({str(is_ok).lower()});</script>", height=0)
+                                    if is_ok:
+                                        st.session_state.session_streak += 1; st.session_state.session_max_streak = max(st.session_state.session_max_streak, st.session_state.session_streak)
+                                    else: st.session_state.session_streak = 0
+                                    st.session_state.last_is_correct = is_ok; time.sleep(0.5); st.session_state.show_result = True; st.rerun()
