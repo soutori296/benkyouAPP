@@ -108,20 +108,23 @@ with st.sidebar:
     st.title("📊 学習記録")
     if st.button("🔄 データを更新", use_container_width=True):
         st.cache_data.clear(); st.session_state.clear(); st.rerun()
+    
     stats = load_all_stats_with_records()
     hist = stats["history"]; streaks = stats["streaks"]
+    
     if 'mode' in st.session_state:
         st.success(f"🔥 今日の連勝: {st.session_state.session_streak}")
         rec = streaks.get(f"max_streak_{st.session_state.mode}", 0)
         st.warning(f"👑 歴代最高: {max(rec, st.session_state.session_max_streak)}")
         st.divider()
-    st.write("**教科別の歴代記録**")
+
+    st.write("**教科別の歴代最高記録**")
     for k, v in streaks.items():
         if "max_streak_" in k: st.caption(f"{k.replace('max_streak_', '')}: {v}連勝")
     st.divider()
-    st.write("<br>" * 15, unsafe_allow_html=True)
-    if st.checkbox("⚙️ メンテナンス", value=False):
-        pass # (修正機能はVer.152と同じ)
+    st.write("<br>" * 25, unsafe_allow_html=True) # スペーサーをさらに拡張
+    if st.checkbox("⚙️ 管理", value=False):
+        pass # (修正機能はVer.152と同様)
 
 # --- 3. メイン画面 ---
 if 'mode' not in st.session_state:
@@ -147,7 +150,7 @@ if 'mode' not in st.session_state:
 else:
     total_q = len(st.session_state.questions)
     if st.session_state.index >= total_q:
-        sync_results_to_gsheet(); st.balloons(); st.success("特訓終了！保存しました。")
+        sync_results_to_gsheet(); st.balloons(); st.success("特訓終了！記録を保存しました。")
         if st.button("TOPへ戻る"): st.session_state.clear(); st.rerun()
     else:
         q = st.session_state.questions[st.session_state.index]; is_order_q = "/" in q['q']
@@ -168,9 +171,9 @@ else:
             with c1:
                 if not st.session_state.show_options:
                     if st.button("🔍 判定して選択肢を表示", use_container_width=True):
-                        # 手書きがない場合は警告
-                        if not is_order_q and (not canvas_res.json_data or len(canvas_res.json_data.get("objects", [])) == 0):
-                            st.error("☝️ 画面に答えを書いてから判定してね！")
+                        # ★ 改良：1画（点だけ等）は拒否する
+                        if not is_order_q and (not canvas_res.json_data or len(canvas_res.json_data.get("objects", [])) < 2):
+                            st.error("☝️ 2画以上書いてね！（答えやメモをしっかり書こう）")
                         else: st.session_state.show_options = True; st.rerun()
             with c2:
                 if st.button("🏳️ 中止して保存", use_container_width=True):
@@ -179,6 +182,7 @@ else:
             if st.session_state.show_options:
                 st.divider()
                 if is_order_q:
+                    # (並べ替えロジック：戻すボタンあり)
                     words = [w.strip() for w in main_p.replace("(","").replace(")","").replace("?","").replace(".","").split("/") if w.strip()]
                     current = st.session_state.user_ans_list; disp = [w for w in words if w not in current]
                     if disp:
@@ -187,8 +191,6 @@ else:
                             if cols[i % 5].button(w, key=f"w_{i}", use_container_width=True): st.session_state.user_ans_list.append(w); st.rerun()
                     if current:
                         st.write(f"解答: {' '.join(current)}")
-                        
-                        # ★ 改良：戻すボタンと最初からボタンの配置
                         bc1, bc2 = st.columns(2)
                         with bc1:
                             if st.button("⬅️ 1つ戻す", use_container_width=True):
@@ -196,7 +198,6 @@ else:
                         with bc2:
                             if st.button("🗑️ 最初から", use_container_width=True):
                                 st.session_state.user_ans_list = []; st.rerun()
-                        
                         if len(current) == len(words):
                             is_ok = " ".join(current).lower() == q['a'].lower()
                             st.session_state.pending_results.append({'q': q['q'], 'is_ok': is_ok, 'rank': q.get('rank','A'), 'subject': st.session_state.mode})
@@ -207,6 +208,7 @@ else:
                             else: st.session_state.session_streak = 0
                             st.session_state.last_is_correct = is_ok; time.sleep(0.5); st.session_state.show_result = True; st.rerun()
                 else:
+                    # (選択肢ロジック)
                     if 'cur_opts' not in st.session_state or st.session_state.get('last_q_id') != st.session_state.index:
                         opts = [q['a']] + random.sample([a for a in st.session_state.all_ans_in_set if a != q['a']], min(3, len(st.session_state.all_ans_in_set)-1))
                         st.session_state.cur_opts = random.sample(opts, len(opts)); st.session_state.last_q_id = st.session_state.index
