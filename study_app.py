@@ -14,14 +14,12 @@ def get_creds():
     return None
 
 def format_math_text(text):
-    """Excelやボタンで読みやすい形式に整形する（HTMLタグは使わない）"""
     if not isinstance(text, str): return text
-    # 記号の置換
-    text = text.replace('*', '×').replace('/', '÷')
-    # 累乗を特殊文字に置換 (2乗, 3乗のみ対応)
+    # 掛け算のみ置換し、割り算の自動置換を削除
+    text = text.replace('*', '×')
     text = text.replace('^2', '²').replace('^3', '³')
     return text
-
+    
 def is_too_easy_math(category, q_text):
     if "数学" not in category: return False
     # 文字や特定の数学記号が含まれれば中学レベルと判定
