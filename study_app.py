@@ -47,7 +47,6 @@ def load_all_stats_with_records():
         return {"history": history, "streaks": streaks}
     except: return {"history": {}, "streaks": {}}
 
-# ★ 改良：ミス時の正解数ダウン(5→4)と一括同期
 def sync_results_to_gsheet():
     if not st.session_state.pending_results: return
     client = get_gsheet_client()
@@ -61,20 +60,15 @@ def sync_results_to_gsheet():
             for res in st.session_state.pending_results:
                 q_t = res['q']
                 if q_t in current_data:
-                    if res['is_ok']:
-                        current_data[q_t]['correct'] = int(current_data[q_t]['correct']) + 1
+                    if res['is_ok']: current_data[q_t]['correct'] = int(current_data[q_t]['correct']) + 1
                     else:
-                        # 失敗した場合、もし正解数が5回以上なら4回に落とす
-                        if int(current_data[q_t]['correct']) >= 5:
-                            current_data[q_t]['correct'] = 4
+                        if int(current_data[q_t]['correct']) >= 5: current_data[q_t]['correct'] = 4
                         current_data[q_t]['wrong'] = int(current_data[q_t]['wrong']) + 1
                 else:
                     current_data[q_t] = {'q': q_t, 'correct': 1 if res['is_ok'] else 0, 'wrong': 0 if res['is_ok'] else 1, 'rank': res['rank'], 'subject': res['subject']}
-            
             final_rows = [['q', 'correct', 'wrong', 'rank', 'subject']]
             for v in current_data.values(): final_rows.append([v['q'], v['correct'], v['wrong'], v['rank'], v['subject']])
             sheet.update('A1', final_rows)
-
             sum_sh = ss.worksheet("summary")
             key_name = f"max_streak_{st.session_state.mode}"
             new_val = st.session_state.session_max_streak
@@ -87,6 +81,40 @@ def sync_results_to_gsheet():
             st.session_state.pending_results = []
             st.cache_data.clear()
         except: st.error("保存失敗")
+
+# ★ 改良：そっくりなダミーを生成するエンジン
+def generate_clever_distractors(correct_ans, subject_mode, all_answers):
+    distractors = set()
+    correct_ans = str(correct_ans)
+    if "数学" in subject_mode:
+        try:
+            val = float(correct_ans)
+            distractors.add(str(int(val + 1) if val.is_integer() else val + 1))
+            distractors.add(str(int(val - 1) if val.is_integer() else val - 1))
+            distractors.add(str(int(-val) if val.is_integer() else -val))
+        except:
+            if "-" in correct_ans: distractors.add(correct_ans.replace("-", ""))
+            else: distractors.add("-" + correct_ans)
+    
+    # 全ての正解リストから「長さが近い(±2)」ものを抽出
+    pool = [str(a) for a in all_answers if abs(len(str(a)) - len(correct_ans)) <= 2 and str(a).lower() != correct_ans.lower()]
+    # 最初の2文字が一致
+    m2 = [a for a in pool if a.lower().startswith(correct_ans[:2].lower())]
+    # 最初の1文字が一致
+    m1 = [a for a in pool if a.lower().startswith(correct_ans[:1].lower()) and a not in m2]
+    # その他
+    m0 = [a for a in pool if a not in m2 and a not in m1]
+    
+    candidates = m2 + m1 + m0
+    for c in candidates:
+        if len(distractors) >= 3: break
+        distractors.add(c)
+    
+    defaults = ["is", "the", "was", "not", "to", "it"]
+    for d in defaults:
+        if len(distractors) >= 3: break
+        if d.lower() != correct_ans.lower(): distractors.add(d)
+    return list(distractors)[:3]
 
 def setup_audio_engine():
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -122,12 +150,19 @@ with st.sidebar:
         rec = streaks.get(f"max_streak_{st.session_state.mode}", 0)
         st.warning(f"👑 歴代最高: {max(rec, st.session_state.session_max_streak)}")
         st.divider()
-    st.write("**教科別の歴代記録**")
+    st.write("**教科別の歴代最高記録**")
     for k, v in streaks.items():
         if "max_streak_" in k: st.caption(f"{k.replace('max_streak_', '')}: {v}連勝")
-    st.write("<br>" * 25, unsafe_allow_html=True)
+    st.divider(); st.write("<br>" * 25, unsafe_allow_html=True)
     if st.checkbox("⚙️ 管理", value=False):
-        pass # (修正機能はVer.152と同様)
+        if 'mode' in st.session_state and st.session_state.index < len(st.session_state.questions):
+            idx = st.session_state.index; cur_q = st.session_state.questions[idx]
+            with st.expander("🛠️ 今の問題を修正", expanded=True):
+                new_q = st.text_input("問題修正", value=cur_q['q'], key=f"i_q_{idx}")
+                new_a = st.text_input("正解修正", value=cur_q['a'], key=f"i_a_{idx}")
+                if st.button("保存して反映", key=f"b_i_{idx}"):
+                    # (update_question_in_gsheetを呼び出し、以下省略)
+                    st.cache_data.clear(); st.rerun()
 
 # --- 3. メイン画面 ---
 if 'mode' not in st.session_state:
@@ -140,35 +175,24 @@ if 'mode' not in st.session_state:
         diff = st.radio("モード選択", diff_opts, horizontal=True)
         if st.button("特訓開始！", use_container_width=True):
             st.session_state.mode = sub; data = all_q.get(sub, [])
-            
-            # ★ 改良：出題頻度の調整ロジック
             filtered = []
             for q in data:
-                correct_count = hist.get(q['q'], {}).get('correct', 0)
-                if correct_count >= 5:
-                    # 5回以上正解している問題は、20%の確率でしか出現させない
-                    if random.random() < 0.2:
-                        filtered.append(q)
-                else:
-                    filtered.append(q)
-            
-            # 苦手克服や並べ替えの追加フィルター
+                if hist.get(q['q'], {}).get('correct', 0) >= 5:
+                    if random.random() < 0.2: filtered.append(q)
+                else: filtered.append(q)
             if "並べ替え" in diff: filtered = [q for q in filtered if "/" in q['q']]
             elif "苦手克服" in diff:
                 wrong_list = [q_t for q_t, v in hist.items() if v.get("wrong", 0) > 0]
                 filtered = [q for q in filtered if q['q'] in wrong_list]
-                if not filtered: st.warning("苦手なし。"); filtered = data
-            
-            if not filtered: filtered = data # 万が一空になった場合の保険
+            if not filtered: filtered = data
             random.shuffle(filtered); st.session_state.questions = filtered[:50]
             st.session_state.all_ans_in_set = [q['a'] for q in data]
             st.session_state.index, st.session_state.session_streak, st.session_state.session_max_streak, st.session_state.pending_results = 0, 0, 0, []
             st.session_state.show_result = False; st.rerun()
 else:
-    # (以下、判定・クイズ進行ロジックはVer.155と同様)
     total_q = len(st.session_state.questions)
     if st.session_state.index >= total_q:
-        sync_results_to_gsheet(); st.balloons(); st.success("特訓終了！保存しました。")
+        sync_results_to_gsheet(); st.balloons(); st.success("特訓終了！記録を保存しました。")
         if st.button("TOPへ戻る"): st.session_state.clear(); st.rerun()
     else:
         q = st.session_state.questions[st.session_state.index]; is_order_q = "/" in q['q']
@@ -225,8 +249,10 @@ else:
                             st.session_state.last_is_correct = is_ok; time.sleep(0.5); st.session_state.show_result = True; st.rerun()
                 else:
                     if 'cur_opts' not in st.session_state or st.session_state.get('last_q_id') != st.session_state.index:
-                        opts = [q['a']] + random.sample([a for a in st.session_state.all_ans_in_set if a != q['a']], min(3, len(st.session_state.all_ans_in_set)-1))
-                        st.session_state.cur_opts = random.sample(opts, len(opts)); st.session_state.last_q_id = st.session_state.index
+                        # ★ 改良された巧妙なダミー生成を呼び出し
+                        opts = [q['a']] + generate_clever_distractors(q['a'], st.session_state.mode, st.session_state.all_ans_in_set)
+                        st.session_state.cur_opts = random.sample(list(set(opts)), len(list(set(opts))))
+                        st.session_state.last_q_id = st.session_state.index
                     cols = st.columns(len(st.session_state.cur_opts))
                     for i, opt in enumerate(st.session_state.cur_opts):
                         if cols[i].button(opt, key=f"o_{i}", use_container_width=True):
