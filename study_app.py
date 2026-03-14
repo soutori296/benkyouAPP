@@ -167,7 +167,7 @@ with st.sidebar:
         st.cache_data.clear(); st.session_state.clear(); st.rerun()
     
     stats_res = load_all_stats_with_records()
-    hist = stats_res["history"]; streaks = stats_res["streaks"]; last_sub = stats_res["last_sub"]
+    hist = stats_res["history"]; streaks = streaks = stats_res["streaks"]; last_sub = stats_res["last_sub"]
     
     if 'mode' in st.session_state:
         st.success(f"🔥 今日の連勝: {st.session_state.session_streak}")
@@ -175,7 +175,7 @@ with st.sidebar:
         st.warning(f"👑 歴代最高: {max(rec, st.session_state.session_max_streak)}")
     
     st.divider()
-    # --- 保護者メニュー ---
+    # --- 保護者メニュー（最速エディタ Ver.177） ---
     with st.expander("👨‍👩‍👧 保護者メニュー"):
         p_mode = st.checkbox("保護者モードを有効にする")
         if p_mode:
@@ -190,39 +190,50 @@ with st.sidebar:
                     df['Total'] = df['correct'] + df['wrong']
                     df['正答率'] = (df['correct'] / df['Total'] * 100).fillna(0).round(1)
                     st.dataframe(df[['subject', 'q', 'correct', 'wrong', '正答率']], use_container_width=True)
-                else: st.info("データなし")
             
             with p_tabs[1]:
-                st.write("### 問題エディタ")
                 all_q_edit = load_questions_from_gsheet()
                 if all_q_edit:
-                    # スマート呼び出し
+                    # 1. 現在の問題をセット
                     if 'mode' in st.session_state and st.session_state.index < len(st.session_state.questions):
-                        cur_q_data = st.session_state.questions[st.session_state.index]
-                        if st.button("📢 今解いている問題をセット"):
-                            st.session_state["p_edit_sub"] = st.session_state.mode
-                            st.session_state["p_edit_q"] = cur_q_data['q']
+                        cur_q = st.session_state.questions[st.session_state.index]
+                        if st.button(f"📢 今の問題を修正：{cur_q['q'][:15]}...", use_container_width=True):
+                            st.session_state["edit_target_q"] = cur_q['q']
+                            st.session_state["edit_target_cat"] = st.session_state.mode
                             st.rerun()
                     
-                    st.divider()
-                    e_sub = st.selectbox("教科を選択", list(all_q_edit.keys()), key="p_edit_sub")
-                    q_list = [item['q'] for item in all_q_edit[e_sub]]
+                    st.write("---")
                     
-                    default_q_idx = 0
-                    if "p_edit_q" in st.session_state and st.session_state["p_edit_q"] in q_list:
-                        default_q_idx = q_list.index(st.session_state["p_edit_q"])
+                    # 2. 全教科一括検索
+                    search_txt = st.text_input("🔍 問題を検索", placeholder="キーワードを入力")
                     
-                    e_q_orig = st.selectbox("修正対象を選択", q_list, index=default_q_idx, key="p_edit_q_manual")
-                    target = next(item for item in all_q_edit[e_sub] if item['q'] == e_q_orig)
-                    new_q = st.text_input("問題文", value=target['q'], key="txt_q")
-                    new_a = st.text_input("正解", value=target['a'], key="txt_a")
+                    flat_q_list = []
+                    for cat, items in all_q_edit.items():
+                        for item in items:
+                            flat_q_list.append({"cat": cat, "q": item['q'], "a": item['a']})
                     
-                    if st.button("スプレッドシートに保存"):
-                        if update_question_in_gsheet(e_sub, e_q_orig, new_q, new_a):
-                            st.success("✅ 修正完了！")
-                            st.cache_data.clear()
-                            if "p_edit_q" in st.session_state: del st.session_state["p_edit_q"]
-                            time.sleep(1); st.rerun()
+                    filtered = [f for f in flat_q_list if search_txt.lower() in f['q'].lower()] if search_txt else flat_q_list[:20]
+                    q_options = [f"[{f['cat']}] {f['q']}" for f in filtered]
+                    
+                    default_idx = 0
+                    if "edit_target_q" in st.session_state:
+                        match_label = f"[{st.session_state['edit_target_cat']}] {st.session_state['edit_target_q']}"
+                        if match_label in q_options: default_idx = q_options.index(match_label)
+                    
+                    selected_label = st.selectbox("修正対象", q_options, index=default_idx)
+                    
+                    if selected_label:
+                        target = filtered[q_options.index(selected_label)]
+                        st.caption(f"教科: {target['cat']}")
+                        new_q = st.text_input("問題文 (修正)", value=target['q'])
+                        new_a = st.text_input("正解 (修正)", value=target['a'])
+                        
+                        if st.button("✅ 修正を保存", use_container_width=True):
+                            if update_question_in_gsheet(target['cat'], target['q'], new_q, new_a):
+                                st.success("保存完了！")
+                                st.cache_data.clear()
+                                if "edit_target_q" in st.session_state: del st.session_state["edit_target_q"]
+                                time.sleep(1); st.rerun()
     st.divider(); st.write("<br>" * 10, unsafe_allow_html=True)
 
 # --- 3. メイン画面 ---
