@@ -31,7 +31,6 @@ def load_questions_from_gsheet():
         return organized
     except: return {}
 
-# ★ 改良：前回選んだ教科も読み込む
 def load_all_stats_with_records():
     client = get_gsheet_client()
     if not client: return {"history": {}, "streaks": {}, "last_sub": ""}
@@ -39,21 +38,17 @@ def load_all_stats_with_records():
         ss = client.open("study_stats_db")
         hist_data = ss.sheet1.get_all_records()
         history = {str(row['q']): {"correct": int(row['correct'] or 0), "wrong": int(row['wrong'] or 0), "subject": str(row.get('subject', '不明'))} for row in hist_data if row.get('q')}
-        
-        streaks = {}
-        last_sub = ""
+        streaks = {}; last_sub = ""
         try:
             sum_sh = ss.worksheet("summary")
             sum_data = sum_sh.get_all_records()
             for row in sum_data:
                 streaks[row['key']] = row['value']
-                if row['key'] == "last_selected_subject":
-                    last_sub = str(row['value'])
+                if row['key'] == "last_selected_subject": last_sub = str(row['value'])
         except: pass
         return {"history": history, "streaks": streaks, "last_sub": last_sub}
     except: return {"history": {}, "streaks": {}, "last_sub": ""}
 
-# ★ 改良：教科の保存ロジックを追加
 def save_last_subject(sub_name):
     client = get_gsheet_client()
     if client:
@@ -71,7 +66,6 @@ def sync_results_to_gsheet():
     with st.spinner('記録を保存中...'):
         try:
             ss = client.open("study_stats_db")
-            # 1. 成績の一括更新
             sheet = ss.sheet1
             rows = sheet.get_all_records()
             current_data = {str(r['q']): r for r in rows}
@@ -87,8 +81,6 @@ def sync_results_to_gsheet():
             final_rows = [['q', 'correct', 'wrong', 'rank', 'subject']]
             for v in current_data.values(): final_rows.append([v['q'], v['correct'], v['wrong'], v['rank'], v['subject']])
             sheet.update('A1', final_rows)
-
-            # 2. 教科別最高記録の更新
             sum_sh = ss.worksheet("summary")
             key_name = f"max_streak_{st.session_state.mode}"
             new_val = st.session_state.session_max_streak
@@ -98,15 +90,12 @@ def sync_results_to_gsheet():
                     if new_val > int(row[1] or 0): sum_sh.update_cell(i+1, 2, new_val)
                     found = True; break
             if not found: sum_sh.append_row([key_name, new_val])
-            
             st.session_state.pending_results = []
             st.cache_data.clear()
         except: st.error("保存失敗")
 
-# ★ 改良：そっくりなダミーを生成するエンジン
 def generate_clever_distractors(correct_ans, subject_mode, all_answers):
-    distractors = set()
-    correct_ans = str(correct_ans)
+    distractors = set(); correct_ans = str(correct_ans)
     if "数学" in subject_mode:
         try:
             val = float(correct_ans)
@@ -116,7 +105,6 @@ def generate_clever_distractors(correct_ans, subject_mode, all_answers):
         except:
             if "-" in correct_ans: distractors.add(correct_ans.replace("-", ""))
             else: distractors.add("-" + correct_ans)
-    
     pool = [str(a) for a in all_answers if abs(len(str(a)) - len(correct_ans)) <= 2 and str(a).lower() != correct_ans.lower()]
     m2 = [a for a in pool if a.lower().startswith(correct_ans[:2].lower())]
     m1 = [a for a in pool if a.lower().startswith(correct_ans[:1].lower()) and a not in m2]
@@ -124,7 +112,6 @@ def generate_clever_distractors(correct_ans, subject_mode, all_answers):
     for c in candidates:
         if len(distractors) >= 3: break
         distractors.add(c)
-    
     defaults = ["is", "the", "was", "not", "to", "it"]
     for d in defaults:
         if len(distractors) >= 3: break
@@ -157,66 +144,57 @@ setup_audio_engine()
 # --- 2. サイドバー ---
 with st.sidebar:
     st.title("📊 学習記録")
-    if st.button("🔄 データを更新", use_container_width=True):
+    if st.button("🔄 最新データに更新", use_container_width=True):
         st.cache_data.clear(); st.session_state.clear(); st.rerun()
-
     stats_res = load_all_stats_with_records()
     hist = stats_res["history"]; streaks = stats_res["streaks"]; last_sub = stats_res["last_sub"]
-
     if 'mode' in st.session_state:
         st.success(f"🔥 今日の連勝: {st.session_state.session_streak}")
         rec = int(streaks.get(f"max_streak_{st.session_state.mode}", 0))
         st.warning(f"👑 歴代最高: {max(rec, st.session_state.session_max_streak)}")
         st.divider()
-
     st.write("**教科別の歴代記録**")
     for k, v in streaks.items():
         if "max_streak_" in k: st.caption(f"{k.replace('max_streak_', '')}: {v}連勝")
-    st.divider(); st.write("<br>" * 25, unsafe_allow_html=True)
-    if st.checkbox("⚙️ 管理", value=False):
-        pass # (修正機能)
+    st.divider(); st.write("<br>" * 30, unsafe_allow_html=True)
+    if st.checkbox("⚙️ メンテナンス", value=False):
+        if 'mode' in st.session_state and st.session_state.index < len(st.session_state.questions):
+            idx = st.session_state.index; cur_q = st.session_state.questions[idx]
+            with st.expander("🛠️ 今の問題を修正", expanded=True):
+                new_q = st.text_input("問題", value=cur_q['q'], key=f"i_q_{idx}")
+                new_a = st.text_input("正解", value=cur_q['a'], key=f"i_a_{idx}")
+                if st.button("保存して反映", key=f"b_i_{idx}"):
+                    # (Google Sheets更新関数を呼び出し)
+                    st.cache_data.clear(); st.rerun()
 
 # --- 3. メイン画面 ---
 if 'mode' not in st.session_state:
     st.title("🛡️ 高校受験対策")
     all_q = load_questions_from_gsheet()
     if all_q:
-        # ★ 前回選んだ教科をデフォルトにする
         q_keys = list(all_q.keys())
         default_idx = q_keys.index(last_sub) if last_sub in q_keys else 0
         sub = st.selectbox("特訓セットを選択", q_keys, index=default_idx)
-        
         diff_opts = ["ミックス", "🔥 苦手克服"]
         if "数学" not in sub: diff_opts.insert(1, "🧩 並べ替え特訓")
         diff = st.radio("モード選択", diff_opts, horizontal=True)
-        
         if st.button("特訓開始！", use_container_width=True):
-            # 教科をスプレッドシートに保存
             save_last_subject(sub)
             st.session_state.mode = sub; data = all_q.get(sub, [])
-            
-            # 頻度調整(5回合格は20%出現)
-            filtered = []
-            for q in data:
-                if int(hist.get(q['q'], {}).get('correct', 0)) >= 5:
-                    if random.random() < 0.2: filtered.append(q)
-                else: filtered.append(q)
-            
+            filtered = [q for q in data if int(hist.get(q['q'], {}).get('correct', 0)) < 5 or random.random() < 0.2]
             if "並べ替え" in diff: filtered = [q for q in filtered if "/" in q['q']]
             elif "苦手克服" in diff:
                 wrong_list = [q_t for q_t, v in hist.items() if v.get("wrong", 0) > 0]
                 filtered = [q for q in filtered if q['q'] in wrong_list]
-            
             if not filtered: filtered = data
             random.shuffle(filtered); st.session_state.questions = filtered[:50]
             st.session_state.all_ans_in_set = [q['a'] for q in data]
             st.session_state.index, st.session_state.session_streak, st.session_state.session_max_streak, st.session_state.pending_results = 0, 0, 0, []
             st.session_state.show_result = False; st.rerun()
 else:
-    # (クイズ進行ロジック: 手書き2画以上必須、並べ替え戻るボタン、巧妙なダミー生成等は継続)
     total_q = len(st.session_state.questions)
     if st.session_state.index >= total_q:
-        sync_results_to_gsheet(); st.balloons(); st.success("特訓終了！記録を保存しました。")
+        sync_results_to_gsheet(); st.balloons(); st.success("特訓終了！保存しました。")
         if st.button("TOPへ戻る"): st.session_state.clear(); st.rerun()
     else:
         q = st.session_state.questions[st.session_state.index]; is_order_q = "/" in q['q']
@@ -232,7 +210,7 @@ else:
             st.write(f"残り {total_q - st.session_state.index} 問")
             main_p, hint_p = parse_q_display(q['q']); st.subheader(main_p)
             if hint_p: st.info(f"💡 {hint_p}")
-            canvas_res = st_canvas(stroke_width=9, height=250, width=840, key=f"c_{st.session_state.index}")
+            canvas_res = st_canvas(stroke_width=9, height=250, use_container_width=True, key=f"c_{st.session_state.index}", background_color="#f0f2f6")
             c1, c2 = st.columns(2)
             with c1:
                 if not st.session_state.show_options:
@@ -243,11 +221,9 @@ else:
             with c2:
                 if st.button("🏳️ 中止して保存", use_container_width=True):
                     sync_results_to_gsheet(); st.session_state.clear(); st.rerun()
-
             if st.session_state.show_options:
                 st.divider()
                 if is_order_q:
-                    # 並べ替えロジック
                     words = [w.strip() for w in main_p.replace("(","").replace(")","").replace("?","").replace(".","").split("/") if w.strip()]
                     current = st.session_state.user_ans_list; disp = [w for w in words if w not in current]
                     if disp:
@@ -268,12 +244,10 @@ else:
                             st.session_state.pending_results.append({'q': q['q'], 'is_ok': is_ok, 'rank': q.get('rank','A'), 'subject': st.session_state.mode})
                             st.components.v1.html(f"<script>window.parent.playJudge({str(is_ok).lower()});</script>", height=0)
                             if is_ok:
-                                st.session_state.session_streak += 1
-                                st.session_state.session_max_streak = max(st.session_state.session_max_streak, st.session_state.session_streak)
+                                st.session_state.session_streak += 1; st.session_state.session_max_streak = max(st.session_state.session_max_streak, st.session_state.session_streak)
                             else: st.session_state.session_streak = 0
                             st.session_state.last_is_correct = is_ok; time.sleep(0.5); st.session_state.show_result = True; st.rerun()
                 else:
-                    # 巧妙な選択肢ロジック
                     if 'cur_opts' not in st.session_state or st.session_state.get('last_q_id') != st.session_state.index:
                         opts = [q['a']] + generate_clever_distractors(q['a'], st.session_state.mode, st.session_state.all_ans_in_set)
                         st.session_state.cur_opts = random.sample(list(set(opts)), len(list(set(opts)))); st.session_state.last_q_id = st.session_state.index
@@ -284,7 +258,6 @@ else:
                             st.session_state.pending_results.append({'q': q['q'], 'is_ok': is_ok, 'rank': q.get('rank','A'), 'subject': st.session_state.mode})
                             st.components.v1.html(f"<script>window.parent.playJudge({str(is_ok).lower()});</script>", height=0)
                             if is_ok:
-                                st.session_state.session_streak += 1
-                                st.session_state.session_max_streak = max(st.session_state.session_max_streak, st.session_state.session_streak)
+                                st.session_state.session_streak += 1; st.session_state.session_max_streak = max(st.session_state.session_max_streak, st.session_state.session_streak)
                             else: st.session_state.session_streak = 0
                             st.session_state.last_is_correct = is_ok; time.sleep(0.5); st.session_state.show_result = True; st.rerun()
