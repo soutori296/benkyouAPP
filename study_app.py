@@ -15,16 +15,13 @@ def get_creds():
 
 def format_math_text(text):
     if not isinstance(text, str): return text
-    # 掛け算のみ置換し、割り算の自動置換を削除
     text = text.replace('*', '×')
     text = text.replace('^2', '²').replace('^3', '³')
     return text
     
 def is_too_easy_math(category, q_text):
     if "数学" not in category: return False
-    # 文字や特定の数学記号が含まれれば中学レベルと判定
     if re.search(r'[xyabπ\^²³\(\)＝=]', q_text): return False
-    # 単純な正の数の四則演算（例: 80÷8, 11+9）を除外
     if re.match(r'^\d+\s*[\+\-\*\/×÷]\s*\d+\s*=$', q_text.strip()): return True
     return False
 
@@ -122,13 +119,11 @@ def generate_clever_distractors(correct_ans, mode, all_ans):
     dists = set(); c_ans = str(correct_ans)
     if "数学" in mode:
         try:
-            # 数字のみの場合
             v = float(c_ans)
             dists.add(str(int(v+1) if v.is_integer() else v+1))
             dists.add(str(int(v-1) if v.is_integer() else v-1))
             dists.add(str(int(-v) if v.is_integer() else -v))
         except:
-            # 方程式などの場合
             if "=" in c_ans:
                 var, val = c_ans.split("=")
                 try:
@@ -149,7 +144,6 @@ def setup_audio():
     st.components.v1.html(f"<script>window.parent.playJudge=function(isOk){{new Audio(isOk?'data:audio/mp3;base64,{c_b64}':'data:audio/mp3;base64,{w_b64}').play();}};</script>", height=0)
 
 def parse_q_display(text):
-    # 英語の問題（英字から始まる）のみ、末尾の日本語をヒントとして切り出す
     if re.match(r'^[A-Za-z\s\(\)\.\,\?\!]+', text):
         m = re.search(r'\s+([ぁ-んァ-ヶ一-龠].*)$', text)
         if m: return text[:m.start()].strip(), m.group(1).strip()
@@ -161,7 +155,14 @@ for k, v in {"user_ans_list": [], "show_options": False, "show_result": False, "
 
 st.set_page_config(page_title="高校受験対策", layout="wide")
 setup_audio()
-st.markdown("<style>.block-container {padding-top: 1rem;} header {visibility: hidden;}</style>", unsafe_allow_html=True)
+
+# CSS修正：サイドバーを出すボタン(header内のボタン)を消さないように設定
+st.markdown("""
+    <style>
+    .block-container {padding-top: 1rem;}
+    [data-testid="stToolbar"] {visibility: hidden;}
+    </style>
+    """, unsafe_allow_html=True)
 
 # --- 2. サイドバー ---
 with st.sidebar:
@@ -171,6 +172,12 @@ with st.sidebar:
     if 'mode' in st.session_state:
         st.success(f"🔥 今日の連勝: {st.session_state.session_streak}")
         st.warning(f"👑 歴代最高: {max(int(stats_data['streaks'].get(f'max_streak_{st.session_state.mode}', 0)), st.session_state.session_max_streak)}")
+        
+        # 中止保存ボタンをこちらに配置
+        if st.button("🏳️ 中止保存", use_container_width=True):
+            sync_results_to_gsheet()
+            st.session_state.clear()
+            st.rerun()
     
     st.divider()
     with st.expander("👨‍👩‍👧 保護者メニュー"):
@@ -289,12 +296,8 @@ else:
                     st.error(f"### ❌ ざんねん！ 正解は **{format_math_text(q['a'])}**")
                     if st.button("理解した！次へ ➡️", use_container_width=True): st.session_state.index += 1; st.session_state.show_result = False; st.session_state.show_options = False; st.session_state.user_ans_list = []; st.rerun()
             else:
-                b_cols = st.columns(2)
-                with b_cols[0]:
-                    if not st.session_state.show_options:
-                        if st.button("🔍 判定へ", use_container_width=True): st.session_state.show_options = True; st.rerun()
-                with b_cols[1]:
-                    if st.button("🏳️ 中止保存", use_container_width=True): sync_results_to_gsheet(); st.session_state.clear(); st.rerun()
+                if not st.session_state.show_options:
+                    if st.button("🔍 判定へ", use_container_width=True): st.session_state.show_options = True; st.rerun()
                 
                 if st.session_state.show_options:
                     st.write("**答えを選択：**")
@@ -303,15 +306,19 @@ else:
                         current = st.session_state.user_ans_list; disp = [w for w in words if w not in current]
                         if current: st.info(" ".join(current))
                         if disp:
-                            cols = st.columns(5)
+                            # 並べ替えの単語ボタンを1行にする
+                            cols = st.columns(len(disp))
                             for i, w in enumerate(disp):
-                                if cols[i % 5].button(w, key=f"w_{i}_{len(current)}"): st.session_state.user_ans_list.append(w); st.rerun()
+                                if cols[i].button(w, key=f"w_{i}_{len(current)}", use_container_width=True):
+                                    st.session_state.user_ans_list.append(w); st.rerun()
+                        
                         bc1, bc2 = st.columns(2)
                         with bc1:
                             if st.button("⬅️ 戻す", use_container_width=True):
                                 if st.session_state.user_ans_list: st.session_state.user_ans_list.pop(); st.rerun()
                         with bc2:
                             if st.button("🗑️ クリア", use_container_width=True): st.session_state.user_ans_list = []; st.rerun()
+                        
                         if len(current) == len(words):
                             is_ok = " ".join(current).lower() == q['a'].lower()
                             st.session_state.pending_results.append({'q': q['q'], 'is_ok': is_ok, 'rank': q.get('rank','A'), 'subject': q['orig_cat']})
@@ -323,11 +330,15 @@ else:
                         if 'cur_opts' not in st.session_state or st.session_state.get('last_q_id') != st.session_state.index:
                             opts = [q['a']] + generate_clever_distractors(q['a'], q['orig_cat'], st.session_state.all_ans_in_set)
                             st.session_state.cur_opts = random.sample(list(set(opts)), len(list(set(opts)))); st.session_state.last_q_id = st.session_state.index
+                        
+                        # 4択ボタンを1行にする
+                        o_cols = st.columns(len(st.session_state.cur_opts))
                         for i, opt in enumerate(st.session_state.cur_opts):
-                            if st.button(format_math_text(opt), key=f"o_{i}", use_container_width=True):
-                                is_ok = (str(opt).lower() == str(q['a']).lower())
-                                st.session_state.pending_results.append({'q': q['q'], 'is_ok': is_ok, 'rank': q.get('rank','A'), 'subject': q['orig_cat']})
-                                st.components.v1.html(f"<script>window.parent.playJudge({str(is_ok).lower()});</script>", height=0)
-                                if is_ok: st.session_state.session_streak += 1; st.session_state.session_max_streak = max(st.session_state.session_max_streak, st.session_state.session_streak)
-                                else: st.session_state.session_streak = 0
-                                st.session_state.last_is_correct = is_ok; time.sleep(0.5); st.session_state.show_result = True; st.rerun()
+                            with o_cols[i]:
+                                if st.button(format_math_text(opt), key=f"o_{i}", use_container_width=True):
+                                    is_ok = (str(opt).lower() == str(q['a']).lower())
+                                    st.session_state.pending_results.append({'q': q['q'], 'is_ok': is_ok, 'rank': q.get('rank','A'), 'subject': q['orig_cat']})
+                                    st.components.v1.html(f"<script>window.parent.playJudge({str(is_ok).lower()});</script>", height=0)
+                                    if is_ok: st.session_state.session_streak += 1; st.session_state.session_max_streak = max(st.session_state.session_max_streak, st.session_state.session_streak)
+                                    else: st.session_state.session_streak = 0
+                                    st.session_state.last_is_correct = is_ok; time.sleep(0.5); st.session_state.show_result = True; st.rerun()
