@@ -332,16 +332,37 @@ all_q, db = load_db()
 
 
 def get_skip_indices(text):
+    """
+    文字列の中から「数字-数字」または「数字」のパターンだけを
+    正規表現でしらみつぶしに抜き出す改良版ロジック。
+    「アホ, 1-5, ここテストに出る10」といった自由なメモに対応。
+    """
     indices = set()
-    for p in re.split(r"[,\s]+", str(text)):
+    if not text:
+        return []
+
+    # 正規表現で「数字-数字」または「数字単体」をすべて抽出
+    # \d+ は1文字以上の数字を指します
+    patterns = re.findall(r"(\d+-\d+|\d+)", str(text))
+
+    for p in patterns:
         if "-" in p:
             try:
+                # ハイフンで分割して範囲を数値化
                 s, e = map(int, p.split("-"))
-                indices.update(range(s, e + 1))
+                # 1〜30問の範囲内にある数字だけを対象にする（安全策）
+                indices.update(range(max(1, s), min(31, e + 1)))
             except Exception:
                 continue
-        elif p.isdigit():
-            indices.add(int(p))
+        else:
+            try:
+                val = int(p)
+                # 1〜30番の範囲内の数字なら除外リストに追加
+                if 1 <= val <= 30:
+                    indices.add(val)
+            except Exception:
+                continue
+
     return sorted(list(indices))
 
 
