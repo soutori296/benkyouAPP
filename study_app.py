@@ -275,21 +275,25 @@ def update_db_question_master(old_cat, old_q, new_rank, new_q, new_a, new_dummy)
 
 def batch_save_to_db(custom_mode=None, custom_qs=None):
     try:
+        # タイマー同期
         if st.session_state.unsynced_seconds > 0:
             st.session_state.daily_seconds = sync_timer(
                 st.session_state.unsynced_seconds
             )
             st.session_state.unsynced_seconds = 0
+
         gc = gspread.authorize(get_creds())
         ss = gc.open("study_stats_db")
+        today_full = datetime.now(JST).strftime("%Y/%m/%d %H:%M:%S")
 
+        # --- 1. masteryシート（習熟度）の一括更新 ---
         if st.session_state.session_results:
             try:
                 sh_m = ss.worksheet("mastery")
                 m_recs = sh_m.get_all_records()
             except Exception:
-                sh_m = ss.add_worksheet(title="mastery", rows="1000", cols="4")
-                sh_m.append_row(["category", "q", "score", "wrong_total"])
+                sh_m = ss.add_worksheet(title="mastery", rows="1000", cols="5")
+                sh_m.append_row(["category", "q", "score", "wrong_total", "last_date"])
                 m_recs = []
 
             m_dict = {
@@ -300,18 +304,38 @@ def batch_save_to_db(custom_mode=None, custom_qs=None):
                 }
                 for i, r in enumerate(m_recs)
             }
+
+            # 💡 通信回数を減らすためのリスト
+            updates = []
+            new_rows = []
+
             for res in st.session_state.session_results:
                 q_txt, cat, ok = res["q"], res["cat"], res["correct"]
                 if q_txt in m_dict:
                     idx_m = m_dict[q_txt]["row"]
                     ns = min(5, max(0, m_dict[q_txt]["s"] + (1 if ok else -1)))
                     nw = m_dict[q_txt]["w"] + (0 if ok else 1)
-                    sh_m.update_cell(idx_m, 3, ns)
-                    sh_m.update_cell(idx_m, 4, nw)
+
+                    # 💡 update_cellを使わず、更新データをリストに溜める
+                    updates.append({"range": f"C{idx_m}", "values": [[ns]]})  # score
+                    updates.append({"range": f"D{idx_m}", "values": [[nw]]})  # wrong
+                    updates.append(
+                        {"range": f"E{idx_m}", "values": [[today_full]]}
+                    )  # date
                 else:
-                    sh_m.append_row([cat, q_txt, 1 if ok else 0, 0 if ok else 1])
+                    new_rows.append(
+                        [cat, q_txt, 1 if ok else 0, 0 if ok else 1, today_full]
+                    )
+
+            # 💡 溜めたデータを「たった1回の通信」で送信！
+            if updates:
+                sh_m.batch_update(updates)
+            if new_rows:
+                sh_m.append_rows(new_rows)
+
             st.session_state.session_results = []
 
+        # --- 2. 履歴（history）への保存処理 ---
         sh_hist = ss.worksheet("history")
         mode = custom_mode if custom_mode else st.session_state.mode
         qs = (custom_qs if custom_qs else st.session_state.questions)[:30]
@@ -322,7 +346,6 @@ def batch_save_to_db(custom_mode=None, custom_qs=None):
         if not custom_qs and tid:
             rn = find_row_by_id(sh_hist, tid)
             if rn:
-                # 💡 120%バグ修正ロジック
                 att = st.session_state.index + (
                     1 if st.session_state.get("show_result") else 0
                 )
@@ -332,13 +355,19 @@ def batch_save_to_db(custom_mode=None, custom_qs=None):
                     if att > 0
                     else "未実施"
                 )
-                sh_hist.update_cell(rn, 1, today)
-                sh_hist.update_cell(rn, 3, sc_str)
+
+                # historyも一括更新（update_cellsを使用）
+                hist_updates = [
+                    {"range": f"A{rn}", "values": [[today]]},
+                    {"range": f"C{rn}", "values": [[sc_str]]},
+                ]
+                sh_hist.batch_update(hist_updates)
+
+                # 💡 保存が完了した時だけキャッシュを消して、画面を更新させる
                 st.cache_data.clear()
                 return True
 
         uid = f"id_{uuid.uuid4().hex[:8]}"
-        # 💡 末尾に除外設定用の空欄 "" を追加
         sh_hist.append_row(
             [
                 today,
@@ -351,46 +380,58 @@ def batch_save_to_db(custom_mode=None, custom_qs=None):
                 "",
             ]
         )
+
+        # 💡 ここでも保存完了時のみクリア
         st.cache_data.clear()
         return True
-    except Exception:
+    except Exception as e:
+        st.error(f"保存エラー: {e}")
         return False
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=3600)
 def load_db():
     try:
         gc = gspread.authorize(get_creds())
         ss = gc.open("study_stats_db")
 
-        # 1. 全問題の母数（rankも取得）
+        # 1. 全問題の母数取得
         q_rows = ss.worksheet("questions").get_all_records()
         org = {}
         cat_total_counts = {}
         for r in q_rows:
             c = str(r.get("category", "共通")).strip()
-            # 💡 rankを辞書に追加
+            # rankを取得（なければデフォルトB）
+            rank_val = str(r.get("rank", "B")).upper().strip()
+
             org.setdefault(c, []).append(
                 {
                     "q": str(r["q"]),
                     "a": str(r["a"]),
-                    "rank": str(r.get("rank", "B")).upper().strip(),  # デフォルトはB
+                    "rank": rank_val,
                     "orig_cat": c,
                 }
             )
             cat_total_counts[c] = cat_total_counts.get(c, 0) + 1
 
-        # 2. 攻略済みデータ（積み上げ版：前回と同じ）
+        # 2. 攻略済みデータ（masteryシートから「解いたことがあるか」で判定）
         try:
             m_rows = ss.worksheet("mastery").get_all_records()
         except Exception:
             m_rows = []
 
         conquered_map = {}
+        total_opened_count = 0  # 💡 これがサイドバーの「4問」の正体
+
         for m in m_rows:
-            c = str(m.get("category", "")).strip()
-            if int(m.get("score", 0)) >= 1:
+            c = str(m.get("category", "共通")).strip()
+            # 💡 scoreが0でも、last_date（日付）が入っていれば「解いた問題」としてカウント
+            # これにより、英語3問＋理科1問＝4問が正しく集計されます
+            last_date_val = str(m.get("last_date", "")).strip()
+
+            if last_date_val != "":
                 conquered_map[c] = conquered_map.get(c, 0) + 1
+                total_opened_count += 1
 
         # 3. 履歴（history）取得
         try:
@@ -398,35 +439,47 @@ def load_db():
         except Exception:
             h_rows = []
 
-        # 4. 分析テーブル作成（前回と同じ）
+        # 4. 分析テーブル（cat_stats）作成
         st_list = []
+        total_questions_in_all = sum(cat_total_counts.values())
+
         for cat, total_in_db in cat_total_counts.items():
+            # 💡 日付が入っている数（mastery基準）を取得
             done = conquered_map.get(cat, 0)
-            rate = round((done / total_in_db) * 100, 1)
+
+            # 到達率の計算
+            if total_in_db > 0:
+                rate = round((done / total_in_db) * 100, 1)
+            else:
+                rate = 0.0
+
             st_list.append(
                 {
                     "カテゴリ": cat,
-                    "開拓状況": f"{done} / {total_in_db}",
+                    "開拓状況": f"{done} / {total_in_db}",  # 英語なら 3 / 265 になる
                     "到達率": f"{rate}%",
                 }
             )
 
-        overall_avg = (
-            round(
-                (sum(conquered_map.values()) / sum(cat_total_counts.values())) * 100, 1
-            )
-            if cat_total_counts
-            else 0.0
-        )
+        # 💡 全体の到達率（サイドバーの「4問」÷ 全問題数）
+        if total_questions_in_all > 0:
+            overall_avg = round((total_opened_count / total_questions_in_all) * 100, 1)
+        else:
+            overall_avg = 0.0
 
+        # 5. タイマーデータの取得
         try:
             t_rows = ss.worksheet("timer").get_all_records()
-            t_val = t_rows[0].get("total", 0)
-            if t_val == "" or t_val == 0:
-                t_val = t_rows[0].get("seconds", 0)
+            if t_rows:
+                t_val = t_rows[0].get("total", 0)
+                if t_val == "" or t_val == 0:
+                    t_val = t_rows[0].get("seconds", 0)
+            else:
+                t_val = 0
         except Exception:
             t_val = 0
 
+        # 完成したデータを辞書形式で返す
         return org, {
             "cat_stats": st_list,
             "history": h_rows,
@@ -434,15 +487,20 @@ def load_db():
             "overall_delta": 0.0,
             "total_time": int(t_val),
         }
-    except Exception:
+
+    except Exception as e:
+        # エラー時は空のデータを返す
+        st.error(f"データベース読み込みエラー: {e}")
         return {}, {
             "total_time": 0,
             "overall_avg": 0,
             "overall_delta": 0,
             "cat_stats": [],
+            "history": [],
         }
 
 
+# 💡 関数の実行
 all_q, db = load_db()
 
 
@@ -512,54 +570,81 @@ with st.sidebar:
         delta=f"{db.get('overall_delta', 0.0)}%",
     )
 
-    # 累計解答数の計算
-    total_q_all = sum(
-        int(re.search(r"\((\d+)問中\)", str(h.get("得点", ""))).group(1))
-        for h in db.get("history", [])
-        if "(" in str(h.get("得点", ""))
-    )
-    col4.metric("📝 累計解答数", f"{total_q_all}問")
+    # --- 累計解答数の計算（強制ダイレクト読み込み版） ---
+    # --- 💡 修正後：キャッシュされたデータ(db)から計算する軽量版 ---
+    total_q_all = 0
+    # すでに load_db() で取得済みのデータを利用します
+    if "cat_stats" in db:
+        # 各カテゴリの「開拓状況」から分子の数字を合計する
+        for stat in db["cat_stats"]:
+            try:
+                # "3 / 265" のような文字列から "3" を取り出す
+                opened_val = int(stat["開拓状況"].split(" / ")[0])
+                total_q_all += opened_val
+            except Exception:
+                continue
+
+    col4.metric("📝 累計解答", f"{total_q_all}問")
 
     st.divider()
 
     # 1. 同期ボタン
-    if st.button("🔄 同期", use_container_width=True, key="sync_button_top"):
+    if st.button("🔄 同期", width="stretch", key="sync_button_top"):
         st.cache_data.clear()
         st.rerun()
 
     # 2. 特訓中のみ出現するボタン（同期ボタンの直下）
     if st.session_state.mode:
         st.write("")
+        # --- 🏳️ 中断・終了ボタン ---
         if st.button(
             "🏳️ 中断セーブして終了",
-            use_container_width=True,
-            type="primary",
             key="save_exit_btn",
+            width="stretch",
+            type="primary",
             disabled=st.session_state.is_saving,
         ):
-            with st.status("💾 セーブ中...", expanded=False):
+            with st.status("💾 データを一括セーブ中...", expanded=False) as status:
                 st.session_state.is_saving = True
+
+                # 音声演出
                 queue_sound("correct.mp3")
                 execute_queued_sound()
-                batch_save_to_db()
-                st.session_state.mode = None
-                st.rerun()
 
+                # 💡 通信1回で済む爆速版の保存処理を実行
+                success = batch_save_to_db()
+
+                if success:
+                    # 💡 保存成功時のみキャッシュをクリア（4問→5問の反映用）
+                    st.cache_data.clear()
+
+                    status.update(
+                        label="✅ セーブ完了！", state="complete", expanded=False
+                    )
+                    st.session_state.mode = None
+                    st.session_state.is_saving = False
+                    st.rerun()
+                else:
+                    status.update(label="❌ セーブ失敗", state="error")
+                    st.session_state.is_saving = False
+                    st.error(
+                        "通信エラーが発生しました。時間を置いて再度お試しください。"
+                    )
+
+        # --- 🚨 不備報告機能（軽量版） ---
         idx_s = st.session_state.index
         if idx_s < len(st.session_state.questions):
             cur = st.session_state.questions[idx_s]
             with st.expander("🚨 不備報告"):
                 msg = st.text_input("内容", key=f"rpt_input_{idx_s}")
-                if st.button(
-                    "送信", key=f"rpt_send_btn_{idx_s}", use_container_width=True
-                ):
+                if st.button("送信", key=f"rpt_send_btn_{idx_s}", width="stretch"):
                     if msg:
+                        # 💡 認証処理を「if msg:」の中に移動。これで普段は一切通信しません。
                         try:
-                            sh_r = (
-                                gspread.authorize(get_creds())
-                                .open("study_stats_db")
-                                .worksheet("reports")
-                            )
+                            # 送信時のみ認証・接続
+                            gc_rpt = gspread.authorize(get_creds())
+                            sh_r = gc_rpt.open("study_stats_db").worksheet("reports")
+
                             sh_r.append_row(
                                 [
                                     datetime.now(JST).strftime("%Y/%m/%d %H:%M"),
@@ -570,15 +655,13 @@ with st.sidebar:
                                 ]
                             )
                             st.toast("報告受理", icon="✅")
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            st.toast(f"報告失敗: {e}", icon="⚠️")
 
     # 3. カテゴリ別分析（常時表示）
     st.subheader("📈 カテゴリ別分析")
     if db.get("cat_stats"):
-        st.dataframe(
-            pd.DataFrame(db["cat_stats"]), hide_index=True, use_container_width=True
-        )
+        st.dataframe(pd.DataFrame(db["cat_stats"]), hide_index=True, width="stretch")
 
     st.divider()
 
@@ -587,7 +670,7 @@ with st.sidebar:
         if st.button(
             "⬅️ 本部へ戻る",
             type="secondary",
-            use_container_width=True,
+            width="stretch",
             key="back_to_main_btn",
         ):
             st.session_state.print_data = None
@@ -602,11 +685,24 @@ with st.sidebar:
     )
 
     # 6. 解答ロック解除キー（一番下）
+    # 💡 CSSを追加して、特定のキーを持つ入力欄の文字を「●」にする
+    st.markdown(
+        """
+        <style>
+        /* parent_unlock_key というキーを持つ入力欄の文字をドットにする */
+        input[aria-label="🗝️ 解答ロック解除キー"] {
+            -webkit-text-security: disc !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     st.write("")
     unlock_key = st.text_input(
         "🗝️ 解答ロック解除キー",
         placeholder="キーを入力...",
-        type="password",
+        # 💡 type="password" は書かない（Chrome対策）
         key="parent_unlock_key",
     )
 
@@ -614,7 +710,7 @@ with st.sidebar:
     if st.session_state.mode:
         if st.button(
             "🏳️ 中断セーブして終了",
-            use_container_width=True,
+            width="stretch",
             type="primary",
             disabled=st.session_state.is_saving,
         ):
@@ -632,7 +728,9 @@ with st.sidebar:
             cur = st.session_state.questions[idx_s]
             with st.expander("🚨 不備報告"):
                 msg = st.text_input("不備内容（誤植など）", key=f"rpt_{idx_s}")
-                if st.button("送信", key=f"btn_rpt_{idx_s}", use_container_width=True):
+                if st.button(
+                    "送信", key=f"btn_rpt_{idx_s}", width="stretch"
+                ):  # ← ここを修正
                     if msg:
                         try:
                             sh_r = (
@@ -656,7 +754,6 @@ with st.sidebar:
                         st.warning("内容を入力してください")
 
 # --- 5. メイン画面：PDFモード ---
-# --- 印刷用表示モード ---
 # --- 印刷用表示モード ---
 if st.session_state.print_data:
     pd_dat = st.session_state.print_data
@@ -711,20 +808,18 @@ if st.session_state.print_data:
 
     st.stop()
 
-# --- 6. メイン画面：本部 ---
 if not st.session_state.mode:
     st.session_state.consecutive_speeding = 0
     st.session_state.is_cheating_flagged = False
     st.title("📖 2027 高校入試攻略：STRATEGY")
 
+    # --- 1. 不備報告（管理者用） ---
     if db.get("reports"):
         for r_idx, rep in enumerate(db["reports"]):
             if len(rep) >= 5:
                 with st.expander(f"⚠️ 報告あり: {rep[1]}"):
-                    nq, na = (
-                        st.text_area("問題", rep[2], key=f"rq_{r_idx}"),
-                        st.text_input("正解", rep[3], key=f"ra_{r_idx}"),
-                    )
+                    nq = st.text_area("問題", rep[2], key=f"rq_{r_idx}")
+                    na = st.text_input("正解", rep[3], key=f"ra_{r_idx}")
                     c1, c2 = st.columns(2)
                     if c1.button(
                         "✅ 修正",
@@ -741,12 +836,12 @@ if not st.session_state.mode:
                             )
                             st.cache_data.clear()
                             st.rerun()
-                    # 💡 安定版から復活：問題自体の抹消ボタン
                     if c2.button(
                         "🗑️ 抹消", key=f"dbtn_{r_idx}", use_container_width=True
                     ):
                         gc = gspread.authorize(get_creds())
-                        sh_q = gc.open("study_stats_db").worksheet("questions")
+                        ss = gc.open("study_stats_db")
+                        sh_q = ss.worksheet("questions")
                         recs_q = sh_q.get_all_records()
                         for i_q, r_q in enumerate(recs_q):
                             if str(r_q.get("category")) == str(rep[1]) and str(
@@ -754,12 +849,11 @@ if not st.session_state.mode:
                             ) == str(rep[2]):
                                 sh_q.delete_rows(i_q + 2)
                                 break
-                        gc.open("study_stats_db").worksheet("reports").delete_rows(
-                            r_idx + 2
-                        )
+                        ss.worksheet("reports").delete_rows(r_idx + 2)
                         st.cache_data.clear()
                         st.rerun()
 
+    # --- 2. ミッション生成エリア ---
     c1, c2 = st.columns(2)
     with c1:
         with st.expander("🚀 通常ミッション生成", expanded=(not db["history"])):
@@ -774,31 +868,19 @@ if not st.session_state.mode:
                     if subj in k and (year == "総合" or year in k)
                     for q in ql
                 ]
-
-                # 💡 内部的には A, B, C で仕分け
-                rank_a = [
-                    q for q in pool if str(q.get("rank", "")).upper() == "A"
-                ]  # 基本
-                rank_b = [
-                    q for q in pool if str(q.get("rank", "")).upper() == "B"
-                ]  # 発展
-                rank_c = [
-                    q for q in pool if str(q.get("rank", "")).upper() == "C"
-                ]  # 上級
+                rank_a = [q for q in pool if str(q.get("rank", "")).upper() == "A"]
+                rank_b = [q for q in pool if str(q.get("rank", "")).upper() == "B"]
+                rank_c = [q for q in pool if str(q.get("rank", "")).upper() == "C"]
                 others = [
                     q
                     for q in pool
                     if str(q.get("rank", "")).upper() not in ["A", "B", "C"]
                 ]
-
-                # シャッフルして 🟢基本 を最優先で詰め込む
                 random.shuffle(rank_a)
                 random.shuffle(rank_b)
                 random.shuffle(rank_c)
                 random.shuffle(others)
-
                 final_selection = (rank_a + rank_b + rank_c + others)[:30]
-
                 batch_save_to_db(custom_mode=f"{year}{subj}", custom_qs=final_selection)
                 st.rerun()
     with c2:
@@ -831,12 +913,10 @@ if not st.session_state.mode:
     h_list = db.get("history", [])
 
     if h_list:
-        # 1. 日付でグループ分け（今週・先週・アーカイブ）
         now_d = datetime.now(JST).date()
-        start_w = now_d - timedelta(days=now_d.weekday())  # 月曜日
+        start_w = now_d - timedelta(days=now_d.weekday())
         gps = {"📌 今週": [], "📌 先週": [], "📌 アーカイブ": []}
 
-        # 💡 修正：h_rows ではなく h_list を使用
         for h in h_list[::-1]:
             try:
                 dt_str = str(h.get("日付", "")).split()[0]
@@ -847,13 +927,11 @@ if not st.session_state.mode:
                     gps["📌 先週"].append(h)
                 else:
                     gps["📌 アーカイブ"].append(h)
-            except Exception:  # 💡 修正：bare except を回避
+            except Exception:
                 gps["📌 アーカイブ"].append(h)
 
-        # 💡 修正：flat_all のリスト内包表記を正しく修正
         flat_all = [q for q_list in all_q.values() for q in q_list]
 
-        # 2. グループごとに表示
         for lbl, items in gps.items():
             if items:
                 with st.expander(
@@ -930,16 +1008,14 @@ if not st.session_state.mode:
                             if c_del.button(
                                 "🗑️", key=f"dl_{tid}", use_container_width=True
                             ):
+                                gc = gspread.authorize(get_creds())
                                 rown = find_row_by_id(
-                                    gspread.authorize(get_creds())
-                                    .open("study_stats_db")
-                                    .worksheet("history"),
-                                    tid,
+                                    gc.open("study_stats_db").worksheet("history"), tid
                                 )
                                 if rown:
-                                    gspread.authorize(get_creds()).open(
-                                        "study_stats_db"
-                                    ).worksheet("history").delete_rows(rown)
+                                    gc.open("study_stats_db").worksheet(
+                                        "history"
+                                    ).delete_rows(rown)
                                     st.cache_data.clear()
                                     st.rerun()
 
@@ -952,22 +1028,18 @@ if not st.session_state.mode:
                                 value=h.get("除外", ""),
                                 key=f"skip_{tid}",
                             )
+                            c_m3.markdown(
+                                '<div style="margin-top: 28px;"></div>',
+                                unsafe_allow_html=True,
+                            )
 
                             if c_m3.button(
                                 "💾 保存", key=f"sv_{tid}", use_container_width=True
                             ):
-                                rown = find_row_by_id(
-                                    gspread.authorize(get_creds())
-                                    .open("study_stats_db")
-                                    .worksheet("history"),
-                                    tid,
-                                )
+                                gc = gspread.authorize(get_creds())
+                                sh_h = gc.open("study_stats_db").worksheet("history")
+                                rown = find_row_by_id(sh_h, tid)
                                 if rown:
-                                    sh_h = (
-                                        gspread.authorize(get_creds())
-                                        .open("study_stats_db")
-                                        .worksheet("history")
-                                    )
                                     sh_h.update_cell(rown, 5, memo_val)
                                     sh_h.update_cell(rown, 8, skip_val)
                                     st.cache_data.clear()
@@ -990,7 +1062,7 @@ else:  # --- 特訓モード ---
             st.error("⚠️ 警告：連続で極端に早いスキップが検知されました。")
 
         c_re, c_sv = st.columns(2)
-        if c_re.button("🔄 最初から解き直す", use_container_width=True):
+        if c_re.button("🔄 最初から解き直す", width="stretch"):
             (
                 st.session_state.index,
                 st.session_state.correct_count,
@@ -1001,7 +1073,7 @@ else:  # --- 特訓モード ---
         if c_sv.button(
             "💾 保存して本部へ戻る",
             type="primary",
-            use_container_width=True,
+            width="stretch",
             disabled=st.session_state.is_saving,
         ):
             # 1. プレースホルダー作成
@@ -1099,7 +1171,7 @@ else:  # --- 特訓モード ---
         if st.session_state.show_result:
             if st.session_state.last_is_correct:
                 st.success(f"SUCCESS: {q['a']}")
-                if st.button("次へ進む ➡️", use_container_width=True):
+                if st.button("次へ進む ➡️", width="stretch"):
                     st.session_state.index += 1
                     st.session_state.show_result = False
                     st.session_state.show_options = False
@@ -1109,14 +1181,14 @@ else:  # --- 特訓モード ---
             else:
                 st.error(f"FAILURE: {q['a']}")
                 c_re, c_next = st.columns(2)
-                if c_re.button("🔄 今の問題を解き直す", use_container_width=True):
+                if c_re.button("🔄 今の問題を解き直す", width="stretch"):
                     (
                         st.session_state.show_result,
                         st.session_state.show_options,
                         st.session_state.current_opts,
                     ) = False, True, []
                     st.rerun()
-                if c_next.button("次へ進む ➡️", use_container_width=True):
+                if c_next.button("次へ進む ➡️", width="stretch"):
                     st.session_state.index += 1
                     st.session_state.show_result = False
                     st.session_state.show_options = False
@@ -1141,7 +1213,7 @@ else:  # --- 特訓モード ---
                             correct_words.count(w) if w in correct_words else 1
                         ):
                             if cols[i].button(
-                                w, key=f"wbtn_{idx}_{i}", use_container_width=True
+                                w, key=f"wbtn_{idx}_{i}", width="stretch"
                             ):
                                 st.session_state["user_ans_order"].append(w)
                                 if len(st.session_state["user_ans_order"]) == len(
@@ -1285,7 +1357,7 @@ else:  # --- 特訓モード ---
                     cols = st.columns(len(st.session_state.current_opts))
                     for i, o in enumerate(st.session_state.current_opts):
                         if cols[i].button(
-                            str(o), key=f"opt_{idx}_{i}", use_container_width=True
+                            str(o), key=f"opt_{idx}_{i}", width="stretch"
                         ):
                             ok = str(o).lower() == ans_raw.lower()
                             queue_sound("correct.mp3" if ok else "wrong.mp3")
@@ -1300,9 +1372,7 @@ else:  # --- 特訓モード ---
             except Exception:
                 st.error("表示エラー")
         else:
-            if st.button(
-                "判定 ＆ オプション表示", use_container_width=True, type="primary"
-            ):
+            if st.button("判定 ＆ オプション表示", width="stretch", type="primary"):
                 # 💡 安定版から復活：サボり（早解き）検知 5.0秒
                 if time.time() - st.session_state.question_start_time < 5.0:
                     st.session_state.consecutive_speeding += 1
