@@ -28,45 +28,45 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    .stMarkdown p { word-wrap: break-word; overflow-wrap: break-word; line-height: 1.7; }
-    .katex { font-size: 1.1em !important; }
+    /* 通常画面：サイドバー幅固定 */
+    [data-testid="stSidebar"] { min-width: 260px !important; max-width: 260px !important; }
 
-    /* 🔑 解答ロック解除キーを「●」にする設定 */
-    input[aria-label="🗝️ 解答ロック解除キー"] {
-        -webkit-text-security: disc;
-    } /* 💡 ここに閉じカッコが必要でした */
-
-    /* 📏 サイドバーの幅設定（ここを書き換えました） */
-    [data-testid="stSidebar"] {
-        min-width: 260px !important; /* デフォルトより狭い260pxに固定 */
-        max-width: 260px !important;
-    }
-
-    /* 🖨️ 印刷用設定 */
+    /* 🖨️ 印刷用設定（2mロール紙 復活版） */
     @media print {
-        @page { size: 210mm 5000mm; margin: 15mm; }
+        @page { 
+            size: 210mm 3000mm; /* 💡 3mのロングロール設定 */
+            margin: 15mm; 
+        }
         
-        section[data-testid="stSidebar"], header, .stButton, iframe, 
-        div[data-testid="stToolbar"], div[data-testid="stSidebarUserContent"], 
-        [data-testid="collapsedControl"] { 
+        /* 💡 修正：iframe は消さない（命令系統を維持） */
+        section[data-testid="stSidebar"], header, .stButton, 
+        div[data-testid="stToolbar"], [data-testid="collapsedControl"] { 
             display: none !important; 
         }
         
+        /* 💡 真っ白対策：メインコンテンツを強制的に可視化 */
         .main .block-container, div[data-testid="stMainBlockContainer"], .stMain { 
-            max-width: 100% !important; width: 100% !important; padding: 0 !important; margin: 0 !important;
+            display: block !important;
+            visibility: visible !important;
+            max-width: 100% !important; 
+            width: 100% !important; 
+            padding: 0 !important; 
+            margin: 0 !important;
         }
 
+        /* 解答枠（ロール紙で書きやすいサイズ） */
         .answer-box { 
-            border: none; 
-            height: 80px; 
+            border: 1.5px solid #000 !important; 
+            height: 200px; 
             width: 100%; 
-            margin-top: 5px;
-            margin-bottom: 15px;
-            background: #fff;
+            margin-top: 10px;
+            margin-bottom: 25px;
+            background: #fff !important;
+            -webkit-print-color-adjust: exact;
         }
     }
     </style>
-""",
+    """,
     unsafe_allow_html=True,
 )
 
@@ -494,83 +494,120 @@ if st.session_state.unsynced_seconds >= 600:
         st.session_state.daily_seconds = sync_timer(st.session_state.unsynced_seconds)
         st.session_state.unsynced_seconds = 0
 
+
 # --- 4. サイドバー ---
 with st.sidebar:
     st.title("📊 STATUS")
 
-    # 💡 1段目
+    # 💡 1段目：時間
     col1, col2 = st.columns(2)
-    col1.metric("🕰️ 合計時間", format_time(st.session_state.total_seconds))
-    col2.metric("⌚ 本日時間", format_time(st.session_state.daily_seconds))
+    col1.metric("🕰️ 全累計時間", format_time(st.session_state.total_seconds))
+    col2.metric("⌚ 本日勉強", format_time(st.session_state.daily_seconds))
 
-    # 💡 2段目（バランス調整のために1つ追加）
+    # 💡 2段目：到達率と解答数
     col3, col4 = st.columns(2)
-
-    # 総合到達率
     col3.metric(
         "🎯 総合到達",
         f"{db.get('overall_avg', 0.0)}%",
         delta=f"{db.get('overall_delta', 0.0)}%",
     )
 
-    # 📝 総解答数（新設：これまで解いた全問題数）
-    # db['history'] から合計を計算するか、db['total_q_count'] を作成して表示
-    total_q = sum(
+    # 累計解答数の計算
+    total_q_all = sum(
         int(re.search(r"\((\d+)問中\)", str(h.get("得点", ""))).group(1))
         for h in db.get("history", [])
         if "(" in str(h.get("得点", ""))
     )
+    col4.metric("📝 累計解答数", f"{total_q_all}問")
 
-    col4.metric("📝 総解答数", f"{total_q}問")
-
-    # 📈 カテゴリ別分析（常時表示）
     st.divider()
+
+    # 1. 同期ボタン
+    if st.button("🔄 同期", use_container_width=True, key="sync_button_top"):
+        st.cache_data.clear()
+        st.rerun()
+
+    # 2. 特訓中のみ出現するボタン（同期ボタンの直下）
+    if st.session_state.mode:
+        st.write("")
+        if st.button(
+            "🏳️ 中断セーブして終了",
+            use_container_width=True,
+            type="primary",
+            key="save_exit_btn",
+            disabled=st.session_state.is_saving,
+        ):
+            with st.status("💾 セーブ中...", expanded=False):
+                st.session_state.is_saving = True
+                queue_sound("correct.mp3")
+                execute_queued_sound()
+                batch_save_to_db()
+                st.session_state.mode = None
+                st.rerun()
+
+        idx_s = st.session_state.index
+        if idx_s < len(st.session_state.questions):
+            cur = st.session_state.questions[idx_s]
+            with st.expander("🚨 不備報告"):
+                msg = st.text_input("内容", key=f"rpt_input_{idx_s}")
+                if st.button(
+                    "送信", key=f"rpt_send_btn_{idx_s}", use_container_width=True
+                ):
+                    if msg:
+                        try:
+                            sh_r = (
+                                gspread.authorize(get_creds())
+                                .open("study_stats_db")
+                                .worksheet("reports")
+                            )
+                            sh_r.append_row(
+                                [
+                                    datetime.now(JST).strftime("%Y/%m/%d %H:%M"),
+                                    cur.get("orig_cat", "不明"),
+                                    cur.get("q", "不明"),
+                                    cur.get("a", "不明"),
+                                    msg,
+                                ]
+                            )
+                            st.toast("報告受理", icon="✅")
+                        except Exception:
+                            pass
+
+    # 3. カテゴリ別分析（常時表示）
     st.subheader("📈 カテゴリ別分析")
     if db.get("cat_stats"):
         st.dataframe(
             pd.DataFrame(db["cat_stats"]), hide_index=True, use_container_width=True
         )
-    else:
-        st.caption("⚠️ 履歴データがまだありません")
-
-    # 🔄 同期ボタン
-    if st.button("🔄 同期", use_container_width=True):
-        st.cache_data.clear()
-        st.rerun()
 
     st.divider()
 
-    # 🖨️ PDF出力機能（印刷モード時のみ表示）
+    # 4. 印刷戻るボタン
     if st.session_state.print_data:
-        pd_dat = st.session_state.print_data
-        time_str = datetime.now(JST).strftime("%Y%m%d%H%M")
-        file_name = f"{pd_dat['mode']}_{time_str}"
-
-        components.html(
-            f"""
-            <button onclick="
-                var oldTitle = window.parent.document.title; 
-                window.parent.document.title = '{file_name}'; 
-                window.parent.print(); 
-                setTimeout(function(){{ window.parent.document.title = oldTitle; }}, 1500);
-            " style="width:100%; background:#ff4b4b; color:white; padding:12px; border:none; border-radius:5px; font-weight:bold; cursor:pointer;">
-                🖨️ PDF保存
-            </button>
-        """,
-            height=60,
-        )
-
-        if st.button("⬅️ 本部へ戻る", type="primary", use_container_width=True):
+        if st.button(
+            "⬅️ 本部へ戻る",
+            type="secondary",
+            use_container_width=True,
+            key="back_to_main_btn",
+        ):
             st.session_state.print_data = None
             st.rerun()
 
-    # 🔊 各種設定
+    # 5. 設定（サウンド有効）
+    # 💡 修正：重複エラー回避のため key を指定
     st.session_state.sound_enabled = st.toggle(
-        "🔊 サウンド有効", value=st.session_state.sound_enabled
+        "🔊 サウンド有効",
+        value=st.session_state.sound_enabled,
+        key="side_sound_toggle_unique",
     )
 
+    # 6. 解答ロック解除キー（一番下）
+    st.write("")
     unlock_key = st.text_input(
-        "🗝️ 解答ロック解除キー", placeholder="キーを入力...", type="password"
+        "🗝️ 解答ロック解除キー",
+        placeholder="キーを入力...",
+        type="password",
+        key="parent_unlock_key",
     )
 
     # 🏳️ 中断・不備報告（特訓モード中のみ表示）
@@ -619,25 +656,59 @@ with st.sidebar:
                         st.warning("内容を入力してください")
 
 # --- 5. メイン画面：PDFモード ---
+# --- 印刷用表示モード ---
+# --- 印刷用表示モード ---
 if st.session_state.print_data:
-    pd_dat, pt = st.session_state.print_data, st.session_state.print_type
-    today_jst = datetime.now(JST).strftime("%Y/%m/%d")
+    pd_dat = st.session_state.print_data
+    pt = st.session_state.print_type
 
+    # 💡 1. ファイル名に「時分秒」まで含める（例: 20260316_023545）
+    now_fn = datetime.now(JST).strftime("%Y%m%d_%H%M%S")
+
+    # 「問題/解答」の区別をファイル名の先頭に付けるとさらに整理しやすくなります
+    type_label = "問題" if pt == "q" else "解答"
+    file_title = f"{type_label}_{pd_dat['mode']}_{now_fn}_{pd_dat['id']}"
+
+    # 💡 2. ブラウザの親画面に対して「名前変更」と「印刷」を命令する
+    components.html(
+        f"""
+        <script>
+        // PDF保存時のデフォルト名になるようにタイトルを書き換え
+        window.parent.document.title = "{file_title}";
+        
+        // メイン画面（親）を印刷する関数
+        function triggerPrint() {{
+            window.parent.focus();
+            window.parent.print();
+        }}
+
+        // 描画完了を待つ（1.5秒後に実行）
+        setTimeout(triggerPrint, 1500);
+        </script>
+        """,
+        height=0,
+    )
+
+    # 💡 3. 画面の中身を描画
     st.markdown(
         f"### {'📖 問題' if pt == 'q' else '🔑 解答マスター'}: {pd_dat['mode']}"
     )
-    st.markdown(f"**実施日: {today_jst}**　　**ID: {pd_dat['id']}**")
+    st.caption(
+        f"実施日: {datetime.now(JST).strftime('%Y/%m/%d %H:%M:%S')} | ID: {pd_dat['id']}"
+    )
     st.divider()
 
     for i, q_p in enumerate(pd_dat["qs"]):
-        st.markdown(f"#### Mission {i + 1}")
-        st.markdown(q_p["q"])
+        with st.container():
+            st.markdown(f"#### Mission {i + 1}")
+            st.markdown(q_p["q"])
+            if pt == "q":
+                # 解答枠（以前設定した answer-box スタイルが適用されます）
+                st.markdown('<div class="answer-box"></div>', unsafe_allow_html=True)
+            else:
+                st.success(f"正解: {q_p['a']}")
+                st.divider()
 
-        if pt == "q":
-            st.markdown('<div class="answer-box"></div>', unsafe_allow_html=True)
-        else:
-            st.success(f"正解: {q_p['a']}")
-            st.divider()
     st.stop()
 
 # --- 6. メイン画面：本部 ---
