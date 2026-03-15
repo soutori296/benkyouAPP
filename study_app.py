@@ -26,37 +26,18 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    /* テキストはみ出し防止 & LaTeX対応 */
     .stMarkdown p { word-wrap: break-word; overflow-wrap: break-word; }
-    
-    /* PCでのサイドバー幅固定 */
     @media (min-width: 768px) {
         section[data-testid="stSidebar"] { min-width: 380px !important; }
     }
-    
-    /* 🖨️ 印刷/PDF保存用CSS：印刷時のみサイドバーを完全に消し、横幅を100%に広げる */
     @media print {
         @page { size: A4 portrait; margin: 15mm; }
-        
-        section[data-testid="stSidebar"], 
-        header, 
-        .stButton, 
-        iframe, 
-        div[data-testid="stToolbar"], 
-        div[data-testid="stSidebarUserContent"],
-        [data-testid="collapsedControl"] { 
+        section[data-testid="stSidebar"], header, .stButton, iframe, div[data-testid="stToolbar"], div[data-testid="stSidebarUserContent"], [data-testid="collapsedControl"] { 
             display: none !important; 
         }
-        
-        .main .block-container, 
-        div[data-testid="stMainBlockContainer"],
-        .stMain {
-            max-width: 100% !important;
-            width: 100% !important;
-            padding: 0 !important;
-            margin: 0 !important;
+        .main .block-container, div[data-testid="stMainBlockContainer"], .stMain {
+            max-width: 100% !important; width: 100% !important; padding: 0 !important; margin: 0 !important;
         }
-        
         .print-container { width: 100%; color: black !important; background: white !important; }
         .page-break { page-break-before: always; }
         ::-webkit-scrollbar { display: none; }
@@ -69,14 +50,17 @@ st.markdown(
 
 # --- 2. API・データ連携 ---
 def get_creds():
-    if "gcp_service_account" in st.secrets:
-        return Credentials.from_service_account_info(
-            st.secrets["gcp_service_account"],
-            scopes=[
-                "https://www.googleapis.com/auth/spreadsheets",
-                "https://www.googleapis.com/auth/drive",
-            ],
-        )
+    try:
+        if "gcp_service_account" in st.secrets:
+            return Credentials.from_service_account_info(
+                st.secrets["gcp_service_account"],
+                scopes=[
+                    "https://www.googleapis.com/auth/spreadsheets",
+                    "https://www.googleapis.com/auth/drive",
+                ],
+            )
+    except Exception:
+        pass
     return None
 
 
@@ -115,7 +99,6 @@ def init_session():
         "questions": [],
         "index": 0,
         "mode": None,
-        "diff": "ミックス",
         "show_options": False,
         "show_result": False,
         "last_is_correct": False,
@@ -142,6 +125,7 @@ def init_session():
 
 init_session()
 
+# タイマー更新
 now = time.time()
 elapsed = now - st.session_state.last_action_time
 st.session_state.last_action_time = now
@@ -159,26 +143,29 @@ def format_time(total_seconds):
     return f"{h}時間{rem_m}分" if h > 0 else f"{m}分"
 
 
-# --- 4. 判定・機能群 ---
+# --- 4. 判定・機能ロジック ---
 def get_skip_indices(text):
     indices = set()
     if not text:
         return []
-    patterns = re.findall(r"(\d+-\d+|\d+)", str(text))
-    for p in patterns:
-        if "-" in p:
-            try:
-                s, e = map(int, p.split("-"))
-                indices.update(range(max(1, s), min(31, e + 1)))
-            except Exception:
-                continue
-        else:
-            try:
-                val = int(p)
-                if 1 <= val <= 30:
-                    indices.add(val)
-            except Exception:
-                continue
+    try:
+        patterns = re.findall(r"(\d+-\d+|\d+)", str(text))
+        for p in patterns:
+            if "-" in p:
+                try:
+                    s, e = map(int, p.split("-"))
+                    indices.update(range(max(1, s), min(31, e + 1)))
+                except Exception:
+                    continue
+            else:
+                try:
+                    val = int(p)
+                    if 1 <= val <= 30:
+                        indices.add(val)
+                except Exception:
+                    continue
+    except Exception:
+        pass
     return sorted(list(indices))
 
 
@@ -205,25 +192,31 @@ def execute_queued_sound():
 def compare_answers(u, c):
     if not u or not c:
         return False
+    try:
 
-    def norm(s):
-        return re.sub(
-            r"[\s\u3000\t\n\r\xa0\$\{\}\\\.,\?\!。？！\'\"、，]", "", str(s).lower()
-        )
+        def norm(s):
+            return re.sub(
+                r"[\s\u3000\t\n\r\xa0\$\{\}\\\.,\?\!。？！\'\"、，]", "", str(s).lower()
+            )
 
-    return norm(u) == norm(c)
+        return norm(u) == norm(c)
+    except Exception:
+        return False
 
 
 def parse_order_question(text, category):
     en, jp, words = str(text), "", []
-    if "英語" in str(category) or "英" in str(category):
-        m = re.search(r"([。？！、，])\s*([A-Za-z\(])", en)
-        if m:
-            jp, en = en[: m.start(1) + 1].strip(), en[m.start(1) + 1 :].strip()
-    m_ans = re.search(r"\((.*?/.*?)\)", en)
-    if m_ans:
-        words = [w.strip() for w in m_ans.group(1).split("/") if w.strip()]
-        en = en.replace(f"({m_ans.group(1)})", "{ANS}").strip()
+    try:
+        if "英語" in str(category) or "英" in str(category):
+            m = re.search(r"([。？！、，])\s*([A-Za-z\(])", en)
+            if m:
+                jp, en = en[: m.start(1) + 1].strip(), en[m.start(1) + 1 :].strip()
+        m_ans = re.search(r"\((.*?/.*?)\)", en)
+        if m_ans:
+            words = [w.strip() for w in m_ans.group(1).split("/") if w.strip()]
+            en = en.replace(f"({m_ans.group(1)})", "{ANS}").strip()
+    except Exception:
+        pass
     return en, jp, words
 
 
@@ -256,8 +249,7 @@ def update_db_question_master(old_cat, old_q, new_rank, new_q, new_a, new_dummy)
                     sh.update_cell(r_num, 6, new_dummy)
                 return True
         return False
-    except Exception as e:
-        st.error(e)
+    except Exception:
         return False
 
 
@@ -272,7 +264,7 @@ def batch_save_to_db(custom_mode=None, custom_qs=None):
         gc = gspread.authorize(get_creds())
         ss = gc.open("study_stats_db")
 
-        # mastery 更新
+        # Mastery 更新
         if st.session_state.session_results:
             try:
                 sh_m = ss.worksheet("mastery")
@@ -302,7 +294,7 @@ def batch_save_to_db(custom_mode=None, custom_qs=None):
                     sh_m.append_row([cat, q_txt, 1 if ok else 0, 0 if ok else 1])
             st.session_state.session_results = []
 
-        # history 更新
+        # History 更新
         sh_hist = ss.worksheet("history")
         mode = custom_mode if custom_mode else st.session_state.mode
         qs = (custom_qs if custom_qs else st.session_state.questions)[:30]
@@ -331,7 +323,7 @@ def batch_save_to_db(custom_mode=None, custom_qs=None):
         st.cache_data.clear()
         return True
     except Exception as e:
-        st.error(e)
+        st.error(f"保存エラー: {e}")
         return False
 
 
@@ -402,6 +394,7 @@ def load_db():
                     "q": str(r["q"]),
                     "a": str(r["a"]),
                     "rank": str(r.get("rank", "-")),
+                    "sub": str(r.get("sub_category", "")),
                     "orig_cat": c,
                     "dummy": str(r.get("dummy", "")),
                 }
@@ -432,10 +425,10 @@ with st.sidebar:
     st.title("📊 CURRENT STATUS")
     st.metric("⏳ 本日の稼働時間", format_time(st.session_state.daily_seconds))
     st.metric("🎯 総合到達率", f"{db.get('overall_avg', 0.0)} %")
-    with st.expander("📈 カテゴリ別データ分析"):
+    with st.expander("📈 カテゴリ別分析"):
         if db.get("cat_stats"):
             st.dataframe(pd.DataFrame(db["cat_stats"]), hide_index=True)
-    if st.button("🔄 データを同期", use_container_width=True):
+    if st.button("🔄 同期", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
     st.divider()
@@ -455,19 +448,19 @@ with st.sidebar:
             st.rerun()
 
     st.session_state.sound_enabled = st.toggle(
-        "🔊 サウンド効果", value=st.session_state.sound_enabled
+        "🔊 サウンド", value=st.session_state.sound_enabled
     )
     if st.session_state.mode:
-        if st.button("🏳️ 中断してセーブ", use_container_width=True, type="primary"):
+        if st.button("🏳️ 中断セーブ", use_container_width=True, type="primary"):
             batch_save_to_db()
             st.session_state.mode = None
             st.rerun()
         idx_s = st.session_state.index
         if idx_s < len(st.session_state.questions):
             cur = st.session_state.questions[idx_s]
-            with st.expander("🚨 システム不備を報告"):
-                msg = st.text_input("不備内容", key=f"rpt_{idx_s}")
-                if st.button("報告を送信", key=f"btn_rpt_{idx_s}"):
+            with st.expander("🚨 不備報告"):
+                msg = st.text_input("内容", key=f"rpt_{idx_s}")
+                if st.button("送信", key=f"btn_rpt_{idx_s}"):
                     try:
                         sh_r = (
                             gspread.authorize(get_creds())
@@ -484,12 +477,11 @@ with st.sidebar:
                             ]
                         )
                         st.toast("報告受理")
-                    except Exception as e:
-                        st.error(e)
+                    except Exception:
+                        pass
 
 # --- 6. メインロジック ---
 
-# A. 印刷モード
 if st.session_state.print_data:
     pd_dat, pt = st.session_state.print_data, st.session_state.print_type
     st.markdown('<div class="print-container">', unsafe_allow_html=True)
@@ -511,24 +503,22 @@ if st.session_state.print_data:
     st.markdown("</div>", unsafe_allow_html=True)
     st.stop()
 
-# B. 本部（トップ）
 if not st.session_state.mode:
     st.session_state.consecutive_speeding = 0
     st.session_state.is_cheating_flagged = False
     st.title("📖 2027 高校入試攻略：STRATEGY")
 
     if db.get("reports"):
-        st.error("🚨 未処理のシステム報告があります！")
         for r_idx, rep in enumerate(db["reports"]):
             if len(rep) >= 5:
-                with st.expander(f"⚠️ {rep[1]} ({rep[0]})"):
+                with st.expander(f"⚠️ 不備報告あり: {rep[1]}"):
                     nq, na = (
                         st.text_area("問題", rep[2], key=f"rq_{r_idx}"),
                         st.text_input("正解", rep[3], key=f"ra_{r_idx}"),
                     )
                     c1, c2 = st.columns(2)
                     if c1.button(
-                        "✅ 修正完了",
+                        "✅ 修正",
                         key=f"rbtn_{r_idx}",
                         type="primary",
                         use_container_width=True,
@@ -562,8 +552,9 @@ if not st.session_state.mode:
 
     c1, c2 = st.columns(2)
     with c1:
-        with st.expander("🚀 通常ミッション（学年選択）", expanded=(not db["history"])):
-            # 教科リストの更新
+        with st.expander(
+            "🚀 通常ミッション（五教科・学年別）", expanded=(not db["history"])
+        ):
             subj = st.selectbox(
                 "教科", ["数学", "英語", "理科", "地理", "歴史", "現代文", "古文・漢文"]
             )
@@ -744,7 +735,6 @@ if not st.session_state.mode:
                                     st.cache_data.clear()
                                     st.toast("保存済")
 
-# C. 特訓中
 else:
     idx, qs = st.session_state.index, st.session_state.questions
     if idx >= len(qs):
@@ -755,7 +745,7 @@ else:
             if len(qs) > 0
             else 0.0
         )
-        st.markdown(f"# 到達率: {sc}%")
+        st.markdown(f"# 今回の到達率: {sc}%")
         if st.session_state.is_cheating_flagged:
             st.error("⚠️ 警告：連続で極端に早いスキップが検知されました。")
         if st.button("本部へ戻る", type="primary", use_container_width=True):
@@ -802,17 +792,87 @@ else:
                 st.rerun()
         elif st.session_state.show_options:
             if not st.session_state.current_opts:
-                opts = [str(q["a"])]
-                ds = [
-                    d.strip() for d in str(q.get("dummy", "")).split(",") if d.strip()
-                ]
-                opts.extend(ds[:3])
-                others = random.sample(db["all_ans"], min(len(db["all_ans"]), 10))
-                opts.extend(
-                    [str(o) for o in others if str(o) != str(q["a"])][: 4 - len(opts)]
-                )
-                random.shuffle(opts)
-                st.session_state.current_opts = opts
+                try:
+                    opts = [str(q["a"])]
+                    hand_dummies = [
+                        d.strip()
+                        for d in str(q.get("dummy", "")).split(",")
+                        if d.strip()
+                    ]
+                    opts.extend(hand_dummies)
+
+                    if len(opts) < 4 and "英語" in q["orig_cat"]:
+                        eng_rules = {
+                            "am": "is, are, was",
+                            "is": "are, am, was",
+                            "are": "is, am, were",
+                            "was": "were, is, am",
+                            "were": "was, are, is",
+                            "can": "will, must, should",
+                            "Can": "Will, Do, Does",
+                            "Who": "When, Where, What",
+                            "who": "when, where, what",
+                            "How many": "How much, How long, How often",
+                            "going to": "will, must, should",
+                        }
+                        if q["a"] in eng_rules:
+                            rd = [
+                                d.strip()
+                                for d in eng_rules[q["a"]].split(",")
+                                if d.strip()
+                            ]
+                            for d in rd:
+                                if d not in opts and len(opts) < 4:
+                                    opts.append(d)
+
+                    if len(opts) < 4 and "数学" in q["orig_cat"]:
+                        ans_str = str(q["a"])
+                        nums = re.findall(r"^-?\d+$", ans_str)
+                        if len(nums) == 1:
+                            n = int(nums[0])
+                            pot = (
+                                [str(-n), str(n + 1), str(n * 2)]
+                                if n != 0
+                                else ["1", "-1", "2"]
+                            )
+                            for p in pot:
+                                if p not in opts and len(opts) < 4:
+                                    opts.append(p)
+                        m_eq = re.match(r"^([a-zA-Z])\s*=\s*(-?\d+)$", ans_str)
+                        if m_eq:
+                            v, n = m_eq.group(1), int(m_eq.group(2))
+                            pot = [f"{v}={-n}", f"{v}={n + 1}", f"{v}={n - 1}"]
+                            for p in pot:
+                                if p not in opts and len(opts) < 4:
+                                    opts.append(p)
+
+                    if len(opts) < 4 and q.get("sub"):
+                        sub_cands = [
+                            x["a"]
+                            for x in all_q.get(q["orig_cat"], [])
+                            if x.get("sub") == q["sub"] and x["a"] != q["a"]
+                        ]
+                        random.shuffle(sub_cands)
+                        for sc in sub_cands:
+                            if sc not in opts and len(opts) < 4:
+                                opts.append(sc)
+
+                    if len(opts) < 4:
+                        cat_cands = [
+                            x["a"]
+                            for x in all_q.get(q["orig_cat"], [])
+                            if x["a"] != q["a"] and x["a"] not in opts
+                        ]
+                        random.shuffle(cat_cands)
+                        for cc in cat_cands:
+                            if cc not in opts and len(opts) < 4:
+                                opts.append(cc)
+
+                    random.shuffle(opts)
+                    st.session_state.current_opts = opts
+                except Exception:
+                    pass
+
             cols = st.columns(len(st.session_state.current_opts))
             for i, o in enumerate(st.session_state.current_opts):
                 if cols[i].button(str(o), key=f"opt_{i}", use_container_width=True):
@@ -830,12 +890,15 @@ else:
             if st.button(
                 "判定 ＆ オプション表示", use_container_width=True, type="primary"
             ):
-                if time.time() - st.session_state.question_start_time < 5.0:
-                    st.session_state.consecutive_speeding += 1
-                    if st.session_state.consecutive_speeding >= 3:
-                        st.session_state.is_cheating_flagged = True
-                else:
-                    st.session_state.consecutive_speeding = 0
+                try:
+                    if time.time() - st.session_state.question_start_time < 5.0:
+                        st.session_state.consecutive_speeding += 1
+                        if st.session_state.consecutive_speeding >= 3:
+                            st.session_state.is_cheating_flagged = True
+                    else:
+                        st.session_state.consecutive_speeding = 0
+                except Exception:
+                    pass
                 st.session_state.show_options = True
                 st.rerun()
 
