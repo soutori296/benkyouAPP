@@ -246,7 +246,7 @@ def get_kanji_score(canvas_result, char, correct_strokes):
         else 0
     )
 
-    if f_score > 0.70:
+    if f_score > 0.65:
         return 100
     if f_score > 0.15:
         return 34
