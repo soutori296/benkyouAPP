@@ -266,6 +266,29 @@ def get_kanji_score(canvas_result, char, correct_strokes):
     # それ以下は「形が違います」
     return 0
 
+def save_mastery_batch(worksheet, updates):
+    """
+    セッション中に溜まった正解数をスプレッドシートに一括反映する
+    updates: {row_index: added_count} の辞書
+    """
+    if not updates:
+        return
+    
+    with st.spinner("学習データをスプレッドシートに保存中..."):
+        # 全データ（mastery列）を一度取得
+        all_data = worksheet.get_all_records()
+        
+        for row_idx, added_val in updates.items():
+            # 現在の習熟度を取得して加算
+            # row_idx は 0始まりのデータ行（ヘッダー除外）を想定
+            current_mastery = int(all_data[row_idx].get("mastery", 0))
+            new_mastery = current_mastery + added_val
+            
+            # mastery列（H列と想定：8列目）を更新
+            # worksheet.update_cell(行, 列, 値) ※スプシの行番号は row_idx + 2
+            worksheet.update_cell(row_idx + 2, 8, new_mastery) 
+            
+    st.success("開拓状況を保存しました！")
 
 def parse_order_question(text, category):
     raw = str(text).strip()
@@ -948,23 +971,23 @@ if not st.session_state.mode:
                 available_cats,
                 key="w_s",
             )
-            if st.button("特訓開始", use_container_width=True):
-                weak_txts = {
-                    r["q"]
-                    for r in db["mastery"]
-                    if int(r.get("score", 0)) < 5 and int(r.get("wrong_total", 0)) >= 1
-                }
-                w_pool = [
-                    q
-                    for k, ql in all_q.items()
-                    if w_subj in k
-                    for q in ql
-                    if q["q"] in weak_txts
-                ]
-                random.shuffle(w_pool)
-                final = w_pool[:30]
-                if batch_save_to_db(custom_mode=f"復習-{w_subj}", custom_qs=final):
-                    st.rerun()
+            if st.button("特訓開始"):
+    # 1. 普通に全問題を読み込む（既存のコード）
+    df_all = pd.DataFrame(sh.worksheet("questions").get_all_records())
+    
+    # 2. 💡 ここを追加：習熟度5以上の問題を除外する（たった3行！）
+    try:
+        df_m = pd.DataFrame(ss.worksheet("mastery").get_all_records())
+        graduated = df_m[df_m['score'].astype(int) >= 5]['q'].tolist() # 卒業リスト
+        df_all = df_all[~df_all['q'].isin(graduated)] # 卒業した問題を除外
+    except:
+        pass # masteryシートがまだ無い時は何もしない
+
+    # 3. あとはそのまま（既存のコード）
+    st.session_state.questions = df_all.to_dict(orient="records")
+    st.session_state.mode = "training"
+    st.session_state.index = 0
+    st.rerun()
 
     st.divider()
     st.subheader("📅 MISSION LOG")
@@ -1218,11 +1241,20 @@ else:  # --- 特訓モード ---
             # 💡 修正ポイント：ボタンを横に並べて「進む」と「スキップ」を配置
             col_next, col_skip = st.columns(2)
 
-            # 1. 次の問題へ進む（全文字100点の場合のみ有効）
-            can_proceed = all(s >= 100 for s in st.session_state.kanji_scores)
+            # 「次の問題へ進む」ボタンの中身
             if col_next.button("次の問題へ進む ➡️", use_container_width=True, type="primary", disabled=not can_proceed):
+                # 保存予約用の辞書がなければ作る
+                if "pending_mastery" not in st.session_state:
+                    st.session_state.pending_mastery = {}
+                
+                # 現在の問題の行番号（row_idx）をキーにして、正解数をカウントアップ
+                row_key = q.get("row_idx")
+                if row_key is not None:
+                    st.session_state.pending_mastery[row_key] = st.session_state.pending_mastery.get(row_key, 0) + 1
+                
+                # 以下、既存の処理
                 st.session_state.session_results.append({"q": q["q"], "cat": cat, "correct": True})
-                st.session_state.correct_count += 1 # 習熟度にカウント
+                st.session_state.correct_count += 1
                 st.session_state.index += 1
                 st.rerun()
 
