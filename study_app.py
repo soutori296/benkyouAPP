@@ -403,16 +403,22 @@ def batch_save_to_db(custom_mode=None, custom_qs=None):
                 sh_m.append_row(["category", "q", "score", "wrong_total", "last_date"])
                 m_recs = []
 
-            m_dict = {
-                str(r["q"]): {
+            # 💡 修正ポイント：空文字 "" を 0 に変換する安全な読み込み
+            m_dict = {}
+            for i, r in enumerate(m_recs):
+                q_key = str(r.get("q", ""))
+                if not q_key: continue # 問題文が空ならスキップ
+                
+                # get("列名") が空文字 "" だったら 0 を入れる処理
+                raw_s = r.get("score")
+                raw_w = r.get("wrong_total")
+                
+                m_dict[q_key] = {
                     "row": i + 2,
-                    "s": int(r.get("score", 0)),
-                    "w": int(r.get("wrong_total", 0)),
+                    "s": int(raw_s) if str(raw_s).strip() != "" else 0,
+                    "w": int(raw_w) if str(raw_w).strip() != "" else 0,
                 }
-                for i, r in enumerate(m_recs)
-            }
 
-            # 💡 通信回数を減らすためのリスト
             updates = []
             new_rows = []
 
@@ -422,28 +428,20 @@ def batch_save_to_db(custom_mode=None, custom_qs=None):
                 if q_txt in m_dict:
                     idx_m = m_dict[q_txt]["row"]
                     
-                    # 💡 漢字カテゴリ判定ロジックを追加
-                    # カテゴリ名に「漢字」が含まれていれば、ミスしても 0（減点なし）
-                    # それ以外（英語など）は -1（ペナルティ）
+                    # 💡 漢字ならペナルティなし(0)、それ以外は -1
                     penalty = 0 if "漢字" in str(cat) else -1
                     
-                    # スコア計算（正解なら+1、それ以外ならpenaltyを適用）
                     ns = min(5, max(0, m_dict[q_txt]["s"] + (1 if ok else penalty)))
                     nw = m_dict[q_txt]["w"] + (0 if ok else 1)
 
-                    # 💡 更新データをリストに溜める
                     updates.append({"range": f"C{idx_m}", "values": [[ns]]})  # score
                     updates.append({"range": f"D{idx_m}", "values": [[nw]]})  # wrong
-                    updates.append(
-                        {"range": f"E{idx_m}", "values": [[today_full]]}
-                    )  # date
+                    updates.append({"range": f"E{idx_m}", "values": [[today_full]]})
                 else:
-                    # 新規登録時のスコア（最初なので減点のしようがないため 1 か 0）
                     new_rows.append(
                         [cat, q_txt, 1 if ok else 0, 0 if ok else 1, today_full]
                     )
 
-            # 💡 一括送信
             if updates:
                 sh_m.batch_update(updates)
             if new_rows:
@@ -462,46 +460,26 @@ def batch_save_to_db(custom_mode=None, custom_qs=None):
         if not custom_qs and tid:
             rn = find_row_by_id(sh_hist, tid)
             if rn:
-                att = st.session_state.index + (
-                    1 if st.session_state.get("show_result") else 0
-                )
+                att = st.session_state.index + (1 if st.session_state.get("show_result") else 0)
                 cor = min(st.session_state.correct_count, att)
-                sc_str = (
-                    f"{round((cor / att) * 100, 1)}点 ({att}問中){cheat}"
-                    if att > 0
-                    else "未実施"
-                )
+                sc_str = f"{round((cor / att) * 100, 1)}点 ({att}問中){cheat}" if att > 0 else "未実施"
 
-                # historyも一括更新
                 hist_updates = [
                     {"range": f"A{rn}", "values": [[today]]},
                     {"range": f"C{rn}", "values": [[sc_str]]},
                 ]
                 sh_hist.batch_update(hist_updates)
-
                 st.cache_data.clear()
                 return True
 
         uid = f"id_{uuid.uuid4().hex[:8]}"
-        sh_hist.append_row(
-            [
-                today,
-                mode,
-                "未実施",
-                json.dumps([q["q"] for q in qs], ensure_ascii=False),
-                "",
-                0,
-                uid,
-                "",
-                ]
-        )
+        sh_hist.append_row([today, mode, "未実施", json.dumps([q["q"] for q in qs], ensure_ascii=False), "", 0, uid, ""])
 
         st.cache_data.clear()
         return True
     except Exception as e:
         st.error(f"保存エラー: {e}")
         return False
-
 
 @st.cache_data(ttl=3600)
 def load_db():
