@@ -1,6 +1,6 @@
 streamlit
-streamlit-drawable-canvas
 gspread
 google-auth
-pandas
+streamlit-drawable-canvas
+numpy
 Pillow
