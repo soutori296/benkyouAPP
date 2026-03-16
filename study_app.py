@@ -187,12 +187,13 @@ def compare_answers(u, c):
 
 def get_kanji_score(canvas_result, char, correct_strokes):
     """
-    判定甘口調整 ＋ 34点が出やすいバランス版
+    ウェブ(Linux)・ローカル(Windows)両対応の最終判定エンジン
     """
     if canvas_result.json_data is None:
         return 0
     user_strokes = len(canvas_result.json_data["objects"])
 
+    # 画数チェック
     try:
         if correct_strokes and str(correct_strokes).strip():
             if abs(user_strokes - int(float(correct_strokes))) > 2:
@@ -206,18 +207,31 @@ def get_kanji_score(canvas_result, char, correct_strokes):
 
     size = 300
     target_img = Image.new("L", (size, size), 0)
+
+    # 💡 優先順位をつけてフォントを読み込む
+    font = None
+    # 1. GitHubにアップしたフォント
+    font_path = os.path.join("fonts", "ipaexg.ttf")
+    # 2. Windowsローカルの明朝体
+    win_font = r"C:\Windows\Fonts\msmincho.ttc"
+
     try:
-        f_p = r"C:\Windows\Fonts\msmincho.ttc"
-        font = (
-            ImageFont.truetype(f_p, 230)
-            if os.path.exists(f_p)
-            else ImageFont.load_default()
-        )
-    except Exception:
+        if os.path.exists(font_path):
+            font = ImageFont.truetype(font_path, 230)
+        elif os.path.exists(win_font):
+            font = ImageFont.truetype(win_font, 230)
+        else:
+            # 💡 両方ない場合に警告を出す（デバッグ用）
+            st.error(
+                "フォントファイルが読み込めません。fontsフォルダを確認してください。"
+            )
+            font = ImageFont.load_default()
+    except Exception as e:
+        st.error(f"フォント読み込みエラー: {e}")
         font = ImageFont.load_default()
 
     draw = ImageDraw.Draw(target_img)
-    # 💡 甘口調整：お手本の太さを 10 ➡ 15 にアップ。これで判定が少し「広く」なります。
+    # 判定の太さは 15 くらいが「ほどよい甘口」です
     draw.text(
         (size // 2, size // 2), char, font=font, fill=255, anchor="mm", stroke_width=15
     )
@@ -232,10 +246,7 @@ def get_kanji_score(canvas_result, char, correct_strokes):
         else 0
     )
 
-    # 💡 合格ラインの引き下げ
-    # 0.50以上：普通に書けば合格（100点）
-    # 0.15以上：場所がだいたい合っていればおまけ（34点）
-    if f_score > 0.65:
+    if f_score > 0.50:
         return 100
     if f_score > 0.15:
         return 34
