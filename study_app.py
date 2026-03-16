@@ -972,22 +972,22 @@ if not st.session_state.mode:
                 key="w_s",
             )
             if st.button("特訓開始"):
-    # 1. 普通に全問題を読み込む（既存のコード）
-    df_all = pd.DataFrame(sh.worksheet("questions").get_all_records())
-    
-    # 2. 💡 ここを追加：習熟度5以上の問題を除外する（たった3行！）
-    try:
-        df_m = pd.DataFrame(ss.worksheet("mastery").get_all_records())
-        graduated = df_m[df_m['score'].astype(int) >= 5]['q'].tolist() # 卒業リスト
-        df_all = df_all[~df_all['q'].isin(graduated)] # 卒業した問題を除外
-    except:
-        pass # masteryシートがまだ無い時は何もしない
-
-    # 3. あとはそのまま（既存のコード）
-    st.session_state.questions = df_all.to_dict(orient="records")
-    st.session_state.mode = "training"
-    st.session_state.index = 0
-    st.rerun()
+                # 1. 普通に全問題を読み込む（既存のコード）
+                df_all = pd.DataFrame(sh.worksheet("questions").get_all_records())
+                
+                # 2. 💡 ここを追加：習熟度5以上の問題を除外する（たった3行！）
+                try:
+                    df_m = pd.DataFrame(ss.worksheet("mastery").get_all_records())
+                    graduated = df_m[df_m['score'].astype(int) >= 5]['q'].tolist() # 卒業リスト
+                    df_all = df_all[~df_all['q'].isin(graduated)] # 卒業した問題を除外
+                except:
+                    pass # masteryシートがまだ無い時は何もしない
+            
+                # 3. あとはそのまま（既存のコード）
+                st.session_state.questions = df_all.to_dict(orient="records")
+                st.session_state.mode = "training"
+                st.session_state.index = 0
+                st.rerun()
 
     st.divider()
     st.subheader("📅 MISSION LOG")
