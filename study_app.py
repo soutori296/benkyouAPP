@@ -689,6 +689,20 @@ with st.sidebar:
             with st.status("💾 データを一括セーブ中...", expanded=False) as status:
                 st.session_state.is_saving = True
 
+                # 💡【NEW】「次へ」を押していない💮の問題も自動でセーブ対象に加える
+                # 全文字100点かつ、まだセーブリストに載っていない場合に実行
+                if "kanji_scores" in st.session_state and all(s >= 100 for s in st.session_state.kanji_scores):
+                    idx = st.session_state.index
+                    if idx < len(st.session_state.questions):
+                        q_now = st.session_state.questions[idx]
+                        # 重複してスコアが増えるのを防ぐチェック
+                        if not any(res["q"] == q_now["q"] for res in st.session_state.session_results):
+                            st.session_state.session_results.append({
+                                "q": q_now["q"], 
+                                "cat": q_now.get("orig_cat", ""), 
+                                "correct": True
+                            })
+
                 # 音声演出
                 queue_sound("correct.mp3")
                 execute_queued_sound()
@@ -697,7 +711,7 @@ with st.sidebar:
                 success = batch_save_to_db()
 
                 if success:
-                    # 💡 保存成功時のみキャッシュをクリア（4問→5問の反映用）
+                    # 💡 保存成功時のみキャッシュをクリア
                     st.cache_data.clear()
 
                     status.update(
