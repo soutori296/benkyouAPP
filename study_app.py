@@ -193,37 +193,37 @@ def get_kanji_score(canvas_result, char, correct_strokes):
     - 厳格判定：線幅8 / 合格ライン0.70
     """
     # 1. キャンバスのデータが空の場合は 0点
-    if canvas_result.json_data is None: 
+    if canvas_result.json_data is None:
         return 0
-    
+
     # 2. ユーザーが書いた画数（線の数）を取得
     user_strokes = len(canvas_result.json_data["objects"])
-    
+
     # 3. 画数ガード：設定された画数と±2以上離れていたら即エラー(-1)
     try:
         if correct_strokes and str(correct_strokes).strip():
             target_s = int(float(str(correct_strokes).strip()))
-            if abs(user_strokes - target_s) > 2: 
-                return -1 
+            if abs(user_strokes - target_s) > 2:
+                return -1
     except Exception:
         # スプシの画数データが読み取れない場合はガードをスキップ
         pass
-    
+
     # 4. ユーザーの描画データをマスク（白黒画像）に変換
     # 透過チャネル(3)が 0 より大きい場所を「書かれた部分」とする
     user_mask = canvas_result.image_data[:, :, 3] > 0
-    if not np.any(user_mask): 
+    if not np.any(user_mask):
         return 0
-    
+
     # 5. お手本（正解）マスクの作成
     size = 300
     target_img = Image.new("L", (size, size), 0)
-    
+
     # フォントの読み込み（GitHubのfontsフォルダ ＞ Windows標準 ＞ デフォルト の順）
     font = None
-    font_path = os.path.join("fonts", "ipaexg.ttf") 
+    font_path = os.path.join("fonts", "ipaexg.ttf")
     win_font = r"C:\Windows\Fonts\msmincho.ttc"
-    
+
     try:
         if os.path.exists(font_path):
             font = ImageFont.truetype(font_path, 230)
@@ -233,22 +233,24 @@ def get_kanji_score(canvas_result, char, correct_strokes):
             font = ImageFont.load_default()
     except Exception:
         font = ImageFont.load_default()
-    
+
     # お手本を黒背景に白文字で描画
     draw = ImageDraw.Draw(target_img)
     # stroke_width=8 は「厳格」な設定です。丁寧に書く必要があります。
-    draw.text((size//2, size//2), char, font=font, fill=255, anchor="mm", stroke_width=8)
+    draw.text(
+        (size // 2, size // 2), char, font=font, fill=255, anchor="mm", stroke_width=8
+    )
     target_mask = np.array(target_img) > 0
-    
+
     # 6. 一致度（F-score）の計算
     # 重なり部分を抽出
     overlap = np.logical_and(target_mask, user_mask).sum()
-    
+
     # 再現率（お手本をどれだけなぞれたか）
     recall = overlap / target_mask.sum() if target_mask.sum() > 0 else 0
     # 適合率（余計なはみ出しがないか）
     precision = overlap / user_mask.sum() if user_mask.sum() > 0 else 0
-    
+
     # F値（バランススコア）
     if (recall + precision) > 0:
         f_score = (2 * recall * precision) / (recall + precision)
@@ -257,14 +259,15 @@ def get_kanji_score(canvas_result, char, correct_strokes):
 
     # 7. スコア判定
     # 0.70以上：一発合格（100点）
-    if f_score > 0.70: 
-        return 100 
+    if f_score > 0.70:
+        return 100
     # 0.25以上：だいたい合っている（34点 = 3回で合格）
-    if f_score > 0.25: 
-        return 34  
-    
+    if f_score > 0.25:
+        return 34
+
     # それ以下は「形が違います」
     return 0
+
 
 def save_mastery_batch(worksheet, updates):
     """
@@ -273,22 +276,23 @@ def save_mastery_batch(worksheet, updates):
     """
     if not updates:
         return
-    
+
     with st.spinner("学習データをスプレッドシートに保存中..."):
         # 全データ（mastery列）を一度取得
         all_data = worksheet.get_all_records()
-        
+
         for row_idx, added_val in updates.items():
             # 現在の習熟度を取得して加算
             # row_idx は 0始まりのデータ行（ヘッダー除外）を想定
             current_mastery = int(all_data[row_idx].get("mastery", 0))
             new_mastery = current_mastery + added_val
-            
+
             # mastery列（H列と想定：8列目）を更新
             # worksheet.update_cell(行, 列, 値) ※スプシの行番号は row_idx + 2
-            worksheet.update_cell(row_idx + 2, 8, new_mastery) 
-            
+            worksheet.update_cell(row_idx + 2, 8, new_mastery)
+
     st.success("開拓状況を保存しました！")
+
 
 def parse_order_question(text, category):
     raw = str(text).strip()
@@ -407,12 +411,13 @@ def batch_save_to_db(custom_mode=None, custom_qs=None):
             m_dict = {}
             for i, r in enumerate(m_recs):
                 q_key = str(r.get("q", ""))
-                if not q_key: continue # 問題文が空ならスキップ
-                
+                if not q_key:
+                    continue  # 問題文が空ならスキップ
+
                 # get("列名") が空文字 "" だったら 0 を入れる処理
                 raw_s = r.get("score")
                 raw_w = r.get("wrong_total")
-                
+
                 m_dict[q_key] = {
                     "row": i + 2,
                     "s": int(raw_s) if str(raw_s).strip() != "" else 0,
@@ -424,13 +429,13 @@ def batch_save_to_db(custom_mode=None, custom_qs=None):
 
             for res in st.session_state.session_results:
                 q_txt, cat, ok = res["q"], res["cat"], res["correct"]
-                
+
                 if q_txt in m_dict:
                     idx_m = m_dict[q_txt]["row"]
-                    
+
                     # 💡 漢字ならペナルティなし(0)、それ以外は -1
                     penalty = 0 if "漢字" in str(cat) else -1
-                    
+
                     ns = min(5, max(0, m_dict[q_txt]["s"] + (1 if ok else penalty)))
                     nw = m_dict[q_txt]["w"] + (0 if ok else 1)
 
@@ -460,9 +465,15 @@ def batch_save_to_db(custom_mode=None, custom_qs=None):
         if not custom_qs and tid:
             rn = find_row_by_id(sh_hist, tid)
             if rn:
-                att = st.session_state.index + (1 if st.session_state.get("show_result") else 0)
+                att = st.session_state.index + (
+                    1 if st.session_state.get("show_result") else 0
+                )
                 cor = min(st.session_state.correct_count, att)
-                sc_str = f"{round((cor / att) * 100, 1)}点 ({att}問中){cheat}" if att > 0 else "未実施"
+                sc_str = (
+                    f"{round((cor / att) * 100, 1)}点 ({att}問中){cheat}"
+                    if att > 0
+                    else "未実施"
+                )
 
                 hist_updates = [
                     {"range": f"A{rn}", "values": [[today]]},
@@ -473,13 +484,25 @@ def batch_save_to_db(custom_mode=None, custom_qs=None):
                 return True
 
         uid = f"id_{uuid.uuid4().hex[:8]}"
-        sh_hist.append_row([today, mode, "未実施", json.dumps([q["q"] for q in qs], ensure_ascii=False), "", 0, uid, ""])
+        sh_hist.append_row(
+            [
+                today,
+                mode,
+                "未実施",
+                json.dumps([q["q"] for q in qs], ensure_ascii=False),
+                "",
+                0,
+                uid,
+                "",
+            ]
+        )
 
         st.cache_data.clear()
         return True
     except Exception as e:
         st.error(f"保存エラー: {e}")
         return False
+
 
 @st.cache_data(ttl=3600)
 def load_db():
@@ -957,18 +980,26 @@ if not st.session_state.mode:
                 key="w_s",
             )
             if st.button("特訓開始"):
-                # 1. 普通に全問題を読み込む（既存のコード）
-                df_all = pd.DataFrame(sh.worksheet("questions").get_all_records())
-                
-                # 2. 💡 ここを追加：習熟度5以上の問題を除外する（たった3行！）
+                # 💡 まずスプレッドシートにアクセスする準備をします
+                gc = gspread.authorize(get_creds())
+                ss = gc.open("study_stats_db")
+
+                # 1. 全問題を読み込み、行番号(row_idx)を刻みます
+                df_all = pd.DataFrame(ss.worksheet("questions").get_all_records())
+                df_all["row_idx"] = df_all.index
+
+                # 2. 習熟度5以上の問題を除外する
                 try:
+                    # masteryシートを読み込む
                     df_m = pd.DataFrame(ss.worksheet("mastery").get_all_records())
-                    graduated = df_m[df_m['score'].astype(int) >= 5]['q'].tolist() # 卒業リスト
-                    df_all = df_all[~df_all['q'].isin(graduated)] # 卒業した問題を除外
-                except:
-                    pass # masteryシートがまだ無い時は何もしない
-            
-                # 3. あとはそのまま（既存のコード）
+                    # score列が 5 以上の問題(q)をリストにする
+                    graduated = df_m[df_m["score"].astype(int) >= 5]["q"].tolist()
+                    # メインの問題から卒業済みを除外
+                    df_all = df_all[~df_all["q"].isin(graduated)]
+                except Exception:
+                    pass  # masteryシートがまだ無い時は全出し
+
+                # 3. セッションにセットして特訓開始
                 st.session_state.questions = df_all.to_dict(orient="records")
                 st.session_state.mode = "training"
                 st.session_state.index = 0
@@ -1161,20 +1192,27 @@ else:  # --- 特訓モード ---
         if is_kanji_mode:
             # --- 🖋️ 漢字特訓専用UI（スキップ機能付き） ---
             ans_str = str(q["a"]).strip()
-            
+
             # 画数データの読み込み（strokes列がない場合は 1画固定で回避）
             try:
-                s_list = [int(x.strip()) for x in str(q.get("strokes", "1,1")).split(",")]
+                s_list = [
+                    int(x.strip()) for x in str(q.get("strokes", "1,1")).split(",")
+                ]
             except Exception:
                 s_list = [1] * len(ans_str)
 
             # セッション状態の初期化
-            if "kanji_scores" not in st.session_state or st.session_state.get("kanji_q_key") != f"{idx}_{cat}":
+            if (
+                "kanji_scores" not in st.session_state
+                or st.session_state.get("kanji_q_key") != f"{idx}_{cat}"
+            ):
                 st.session_state.kanji_scores = [0] * len(ans_str)
                 st.session_state.kanji_resets = [0] * len(ans_str)
                 st.session_state.kanji_q_key = f"{idx}_{cat}"
 
-            st.caption(f"Mission {idx + 1}/{len(qs)} | ⭕️ {st.session_state.correct_count} | 🏷️ {cat}")
+            st.caption(
+                f"Mission {idx + 1}/{len(qs)} | ⭕️ {st.session_state.correct_count} | 🏷️ {cat}"
+            )
             st.markdown(f"### {q['q']}")
 
             # 漢字一文字ずつの入力ユニットを表示
@@ -1182,31 +1220,43 @@ else:  # --- 特訓モード ---
             for i, char in enumerate(ans_str):
                 with cols[i]:
                     score_now = st.session_state.kanji_scores[i]
-                    
+
                     # 巨大表示ボックス
-                    st.markdown(f"""
+                    st.markdown(
+                        f"""
                         <div style='text-align:center; padding:15px; background-color:#f0f8ff; border:3px solid #4A90E2; border-radius:15px; margin-bottom:10px;'>
                             <div style='font-size:160px; font-weight:normal; color:#1E3A5F; line-height:1.2;'>{char}</div>
                             <div style='color:#4A90E2; font-size:18px;'>{s_list[i]}画 (習得率: {min(100, score_now)}%)</div>
                         </div>
-                    """, unsafe_allow_html=True)
-                    
+                    """,
+                        unsafe_allow_html=True,
+                    )
+
                     st.progress(min(100, score_now) / 100)
-                    
+
                     if score_now < 100:
                         # 描画キャンバス
                         can = st_canvas(
                             stroke_width=12,
-                            stroke_color="#000", background_color="#fff",
-                            height=300, width=300, 
+                            stroke_color="#000",
+                            background_color="#fff",
+                            height=300,
+                            width=300,
                             key=f"k_can_v4_{idx}_{i}_{st.session_state.kanji_resets[i]}",
-                            display_toolbar=False
+                            display_toolbar=False,
                         )
                         c1, c2 = st.columns(2)
-                        if c1.button(f"採点", key=f"k_sbtn_{idx}_{i}", type="primary", use_container_width=True):
+                        if c1.button(
+                            "採点",
+                            key=f"k_sbtn_{idx}_{i}",
+                            type="primary",
+                            use_container_width=True,
+                        ):
                             res = get_kanji_score(can, char, s_list[i])
                             if res == -1:
-                                st.error(f"画数エラー({len(can.json_data['objects'])}画)")
+                                st.error(
+                                    f"画数エラー({len(can.json_data['objects'])}画)"
+                                )
                             elif res > 0:
                                 st.session_state.kanji_scores[i] += res
                                 st.session_state.kanji_resets[i] += 1
@@ -1214,15 +1264,20 @@ else:  # --- 特訓モード ---
                                 st.rerun()
                             else:
                                 st.error("形が違います")
-                        if c2.button(f"消す", key=f"k_rbtn_{idx}_{i}", use_container_width=True):
+                        if c2.button(
+                            "消す", key=f"k_rbtn_{idx}_{i}", use_container_width=True
+                        ):
                             st.session_state.kanji_resets[i] += 1
                             st.rerun()
                     else:
                         st.success("Mastered!")
-                        st.markdown("<h1 style='text-align:center; font-size:150px; color:#FF4B4B;'>💮</h1>", unsafe_allow_html=True)
+                        st.markdown(
+                            "<h1 style='text-align:center; font-size:150px; color:#FF4B4B;'>💮</h1>",
+                            unsafe_allow_html=True,
+                        )
 
             st.divider()
-            
+
             # 💡 修正ポイント：ボタンを横に並べて「進む」と「スキップ」を配置
             col_next, col_skip = st.columns(2)
 
@@ -1230,18 +1285,27 @@ else:  # --- 特訓モード ---
             can_proceed = all(s >= 100 for s in st.session_state.kanji_scores)
 
             # 「次の問題へ進む」ボタンの中身
-            if col_next.button("次の問題へ進む ➡️", use_container_width=True, type="primary", disabled=not can_proceed):
+            if col_next.button(
+                "次の問題へ進む ➡️",
+                use_container_width=True,
+                type="primary",
+                disabled=not can_proceed,
+            ):
                 # 保存予約用の辞書がなければ作る
                 if "pending_mastery" not in st.session_state:
                     st.session_state.pending_mastery = {}
-                
+
                 # 現在の問題の行番号（row_idx）をキーにして、正解数をカウントアップ
                 row_key = q.get("row_idx")
                 if row_key is not None:
-                    st.session_state.pending_mastery[row_key] = st.session_state.pending_mastery.get(row_key, 0) + 1
-                
+                    st.session_state.pending_mastery[row_key] = (
+                        st.session_state.pending_mastery.get(row_key, 0) + 1
+                    )
+
                 # 以下、既存の処理
-                st.session_state.session_results.append({"q": q["q"], "cat": cat, "correct": True})
+                st.session_state.session_results.append(
+                    {"q": q["q"], "cat": cat, "correct": True}
+                )
                 st.session_state.correct_count += 1
                 st.session_state.index += 1
                 st.rerun()
@@ -1249,7 +1313,9 @@ else:  # --- 特訓モード ---
             # 2. 💡 スキップボタン（いつでも押せる）
             if col_skip.button("この問題をスキップ ⏩", use_container_width=True):
                 # 習熟度（correct_count）は増やさず、結果を False として記録
-                st.session_state.session_results.append({"q": q["q"], "cat": cat, "correct": False})
+                st.session_state.session_results.append(
+                    {"q": q["q"], "cat": cat, "correct": False}
+                )
                 st.session_state.index += 1
                 st.rerun()
         else:
