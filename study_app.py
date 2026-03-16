@@ -418,23 +418,32 @@ def batch_save_to_db(custom_mode=None, custom_qs=None):
 
             for res in st.session_state.session_results:
                 q_txt, cat, ok = res["q"], res["cat"], res["correct"]
+                
                 if q_txt in m_dict:
                     idx_m = m_dict[q_txt]["row"]
-                    ns = min(5, max(0, m_dict[q_txt]["s"] + (1 if ok else -1)))
+                    
+                    # 💡 漢字カテゴリ判定ロジックを追加
+                    # カテゴリ名に「漢字」が含まれていれば、ミスしても 0（減点なし）
+                    # それ以外（英語など）は -1（ペナルティ）
+                    penalty = 0 if "漢字" in str(cat) else -1
+                    
+                    # スコア計算（正解なら+1、それ以外ならpenaltyを適用）
+                    ns = min(5, max(0, m_dict[q_txt]["s"] + (1 if ok else penalty)))
                     nw = m_dict[q_txt]["w"] + (0 if ok else 1)
 
-                    # 💡 update_cellを使わず、更新データをリストに溜める
+                    # 💡 更新データをリストに溜める
                     updates.append({"range": f"C{idx_m}", "values": [[ns]]})  # score
                     updates.append({"range": f"D{idx_m}", "values": [[nw]]})  # wrong
                     updates.append(
                         {"range": f"E{idx_m}", "values": [[today_full]]}
                     )  # date
                 else:
+                    # 新規登録時のスコア（最初なので減点のしようがないため 1 か 0）
                     new_rows.append(
                         [cat, q_txt, 1 if ok else 0, 0 if ok else 1, today_full]
                     )
 
-            # 💡 溜めたデータを「たった1回の通信」で送信！
+            # 💡 一括送信
             if updates:
                 sh_m.batch_update(updates)
             if new_rows:
@@ -463,14 +472,13 @@ def batch_save_to_db(custom_mode=None, custom_qs=None):
                     else "未実施"
                 )
 
-                # historyも一括更新（update_cellsを使用）
+                # historyも一括更新
                 hist_updates = [
                     {"range": f"A{rn}", "values": [[today]]},
                     {"range": f"C{rn}", "values": [[sc_str]]},
                 ]
                 sh_hist.batch_update(hist_updates)
 
-                # 💡 保存が完了した時だけキャッシュを消して、画面を更新させる
                 st.cache_data.clear()
                 return True
 
@@ -485,10 +493,9 @@ def batch_save_to_db(custom_mode=None, custom_qs=None):
                 0,
                 uid,
                 "",
-            ]
+                ]
         )
 
-        # 💡 ここでも保存完了時のみクリア
         st.cache_data.clear()
         return True
     except Exception as e:
