@@ -1202,7 +1202,7 @@ else:  # --- 特訓モード ---
                             elif res > 0:
                                 st.session_state.kanji_scores[i] += res
                                 st.session_state.kanji_resets[i] += 1
-                                # 💡 音声再生が必要な場合はここに記述
+                                queue_sound("correct.mp3")
                                 st.rerun()
                             else:
                                 st.error("形が違います")
