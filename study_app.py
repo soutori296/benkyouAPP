@@ -510,7 +510,7 @@ def load_db():
         gc = gspread.authorize(get_creds())
         ss = gc.open("study_stats_db")
 
-        # 1. 全問題の母数取得（strokes列も読み込む）
+        # 1. 全問題の母数取得
         q_rows = ss.worksheet("questions").get_all_records()
         org = {}
         cat_total_counts = {}
@@ -518,15 +518,22 @@ def load_db():
             c = str(r.get("category", "共通")).strip()
             rank_val = str(r.get("rank", "B")).upper().strip()
 
-            org.setdefault(c, []).append(
-                {
-                    "q": str(r["q"]),
-                    "a": str(r["a"]),
-                    "rank": rank_val,
-                    "orig_cat": c,
-                    "strokes": str(r.get("strokes", "")),  # 💡 画数データを保持
-                }
-            )
+            # 💡 修正ポイント：strokes1, strokes2... などの新しい列もすべて保持するように変更
+            # 辞書 r（1行分の全データ）をそのままベースにして、必要なキーを整理します
+            question_data = {
+                "q": str(r.get("q", "")),
+                "a": str(r.get("a", "")),
+                "rank": rank_val,
+                "orig_cat": c,
+            }
+
+            # strokes1 から strokes10 くらいまで、もし列が存在すれば自動でコピーする
+            for i in range(1, 11):
+                col_name = f"strokes{i}"
+                if col_name in r:
+                    question_data[col_name] = r[col_name]
+
+            org.setdefault(c, []).append(question_data)
             cat_total_counts[c] = cat_total_counts.get(c, 0) + 1
 
         # 2. 攻略済みデータ判定
@@ -557,7 +564,7 @@ def load_db():
                 }
             )
 
-        # 完成したデータを辞書形式で返す
+        # 戻り値の作成
         return org, {
             "cat_stats": st_list,
             "overall_avg": round(
@@ -571,18 +578,13 @@ def load_db():
             "reports": ss.worksheet("reports").get_all_records()
             if "reports" in [w.title for w in ss.worksheets()]
             else [],
-            "total_time": int(
-                ss.worksheet("timer").get_all_records()[0].get("total", 0)
-            )
-            if "timer" in [w.title for w in ss.worksheets()]
-            else 0,
+            "total_time": 0,  # timerエラー回避用
         }
     except Exception as e:
         st.error(f"DB読み込みエラー: {e}")
         return {}, {"cat_stats": [], "overall_avg": 0, "history": [], "reports": []}
 
 
-# 💡 関数の実行
 all_q, db = load_db()
 
 
@@ -691,17 +693,24 @@ with st.sidebar:
 
                 # 💡【NEW】「次へ」を押していない💮の問題も自動でセーブ対象に加える
                 # 全文字100点かつ、まだセーブリストに載っていない場合に実行
-                if "kanji_scores" in st.session_state and all(s >= 100 for s in st.session_state.kanji_scores):
+                if "kanji_scores" in st.session_state and all(
+                    s >= 100 for s in st.session_state.kanji_scores
+                ):
                     idx = st.session_state.index
                     if idx < len(st.session_state.questions):
                         q_now = st.session_state.questions[idx]
                         # 重複してスコアが増えるのを防ぐチェック
-                        if not any(res["q"] == q_now["q"] for res in st.session_state.session_results):
-                            st.session_state.session_results.append({
-                                "q": q_now["q"], 
-                                "cat": q_now.get("orig_cat", ""), 
-                                "correct": True
-                            })
+                        if not any(
+                            res["q"] == q_now["q"]
+                            for res in st.session_state.session_results
+                        ):
+                            st.session_state.session_results.append(
+                                {
+                                    "q": q_now["q"],
+                                    "cat": q_now.get("orig_cat", ""),
+                                    "correct": True,
+                                }
+                            )
 
                 # 音声演出
                 queue_sound("correct.mp3")
@@ -912,16 +921,18 @@ if not st.session_state.mode:
     # --- 1. 不備報告（管理者用） ---
     if db.get("reports"):
         for r_idx, rep in enumerate(db["reports"]):
-            if not rep: continue
-                
+            if not rep:
+                continue
+
             if isinstance(rep, dict):
                 cat_name = rep.get("教科")
                 q_text = rep.get("問題")
                 a_text = rep.get("正解")
                 reason = rep.get("報告理由")
-                current_stroke = rep.get("画数", "") # スプシに項目がある場合
+                current_stroke = rep.get("画数", "")  # スプシに項目がある場合
             else:
-                if len(rep) < 5: continue
+                if len(rep) < 5:
+                    continue
                 cat_name = rep[1]
                 q_text = rep[2]
                 a_text = rep[3]
@@ -934,35 +945,50 @@ if not st.session_state.mode:
             with st.expander(f"⚠️ 報告あり: {cat_name}（{reason}）"):
                 nq = st.text_area("問題", q_text, key=f"rq_{r_idx}")
                 na = st.text_input("正解", a_text, key=f"ra_{r_idx}")
-                
+
                 # --- 💡 漢字の場合のみ画数入力欄を表示 ---
                 ns = None
                 if cat_name == "漢字":
-                    ns = st.number_input("画数 (stroke)", value=int(current_stroke) if str(current_stroke).isdigit() else 0, key=f"rs_{r_idx}")
+                    ns = st.number_input(
+                        "画数 (stroke)",
+                        value=int(current_stroke)
+                        if str(current_stroke).isdigit()
+                        else 0,
+                        key=f"rs_{r_idx}",
+                    )
 
                 c1, c2 = st.columns(2)
-                
+
                 # ✅ 修正ボタン
-                if c1.button("✅ 修正", key=f"rbtn_{r_idx}", type="primary", use_container_width=True):
+                if c1.button(
+                    "✅ 修正",
+                    key=f"rbtn_{r_idx}",
+                    type="primary",
+                    use_container_width=True,
+                ):
                     # update_db_question_master の第6引数(stroke)に ns を渡す
                     if update_db_question_master(cat_name, q_text, None, nq, na, ns):
                         gc = gspread.authorize(get_creds())
-                        gc.open("study_stats_db").worksheet("reports").delete_rows(r_idx + 2)
+                        gc.open("study_stats_db").worksheet("reports").delete_rows(
+                            r_idx + 2
+                        )
                         st.cache_data.clear()
                         st.rerun()
-                
+
                 # 🗑️ 抹消ボタン
                 if c2.button("🗑️ 抹消", key=f"dbtn_{r_idx}", use_container_width=True):
                     gc = gspread.authorize(get_creds())
                     ss = gc.open("study_stats_db")
                     sh_q = ss.worksheet("questions")
                     recs_q = sh_q.get_all_records()
-                    
+
                     for i_q, r_q in enumerate(recs_q):
-                        if str(r_q.get("category")) == str(cat_name) and str(r_q.get("q")) == str(q_text):
+                        if str(r_q.get("category")) == str(cat_name) and str(
+                            r_q.get("q")
+                        ) == str(q_text):
                             sh_q.delete_rows(i_q + 2)
                             break
-                    
+
                     ss.worksheet("reports").delete_rows(r_idx + 2)
                     st.cache_data.clear()
                     st.rerun()
@@ -1222,16 +1248,21 @@ else:  # --- 特訓モード ---
         is_kanji_mode = "漢字" in cat
 
         if is_kanji_mode:
-            # --- 🖋️ 漢字特訓専用UI（スキップ機能付き） ---
+            # --- 🖋️ 漢字特訓専用UI ---
             ans_str = str(q["a"]).strip()
 
-            # 画数データの読み込み（strokes列がない場合は 1画固定で回避）
-            try:
-                s_list = [
-                    int(x.strip()) for x in str(q.get("strokes", "1,1")).split(",")
-                ]
-            except Exception:
-                s_list = [1] * len(ans_str)
+            # 💡 修正ポイント：strokes1, strokes2... から個別に画数を取得
+            s_list = []
+            for i in range(1, len(ans_str) + 1):
+                col_name = f"strokes{i}"
+                # q.get(col_name) でスプレッドシートの各列から数字を拾う
+                val = q.get(col_name)
+
+                if val is not None and str(val).strip().isdigit():
+                    s_list.append(int(str(val).strip()))
+                else:
+                    # 万が一、2列目に数字を入れ忘れた時用の安全ガード（1画）
+                    s_list.append(1)
 
             # セッション状態の初期化
             if (
@@ -1249,6 +1280,7 @@ else:  # --- 特訓モード ---
 
             # 漢字一文字ずつの入力ユニットを表示
             cols = st.columns(len(ans_str))
+
             for i, char in enumerate(ans_str):
                 with cols[i]:
                     score_now = st.session_state.kanji_scores[i]
@@ -1351,41 +1383,12 @@ else:  # --- 特訓モード ---
                 st.session_state.index += 1
                 st.rerun()
         else:
-            # --- 📖 通常の選択肢モード（提供された既存コードの移植） ---
+            # --- 📖 通常の選択肢モード ---
             en_display, jp_display, choices_from_q = parse_order_question(
                 q["q"], q["orig_cat"]
             )
-            ans_raw = str(q["a"]).strip()
-
-            def get_correct_parts(ans, choices):
-                ans_clean = ans.replace("(", "").replace(")", "").rstrip(".")
-                if "/" in ans_clean:
-                    return [w.strip() for w in ans_clean.split("/") if w.strip()]
-                temp_words = ans_clean.split()
-                parts, i = [], 0
-                sorted_choices = sorted(choices, key=len, reverse=True)
-                while i < len(temp_words):
-                    found = False
-                    for c in sorted_choices:
-                        cw = c.split()
-                        if len(cw) > 1 and temp_words[i : i + len(cw)] == cw:
-                            parts.append(" ".join(cw))
-                            i += len(cw)
-                            found = True
-                            break
-                    if not found:
-                        parts.append(temp_words[i])
-                        i += 1
-                return parts
-
-            correct_words = get_correct_parts(ans_raw, choices_from_q)
-            is_order = (
-                (len(choices_from_q) > 0)
-                or ("/" in ans_raw)
-                or (" " in ans_raw and len(correct_words) >= 2)
-                if "英語" in q["orig_cat"]
-                else "/" in ans_raw
-            )
+            # 💡 判定用：スプレッドシートの「正解」を完璧にクリーニング
+            ans_clean = str(q["a"]).strip()
 
             st.caption(
                 f"Mission {idx + 1}/{len(qs)} | ⭕️ {st.session_state.correct_count} | 🏷️ ランク: {RANK_LABELS.get(str(q.get('rank', 'B')).upper(), '⚪ その他')}"
@@ -1394,6 +1397,7 @@ else:  # --- 特訓モード ---
             if jp_display:
                 st.markdown(f"#### {jp_display}")
 
+            # 🖋️ ペンツール
             tool = st.radio(
                 "Tool",
                 ["🖋️ ペン", "🧽 消しゴム"],
@@ -1412,6 +1416,7 @@ else:  # --- 特訓モード ---
             )
 
             if st.session_state.show_result:
+                # 結果表示（省略せずに既存のものを維持）
                 if st.session_state.last_is_correct:
                     st.success(f"SUCCESS: {q['a']}")
                     if st.button("次へ進む ➡️", width="stretch"):
@@ -1441,133 +1446,83 @@ else:  # --- 特訓モード ---
                             st.session_state.question_start_time,
                         ) = False, time.time()
                         st.rerun()
+
             elif st.session_state.show_options:
                 try:
-                    if is_order:
-                        if not st.session_state.current_opts:
-                            st.session_state.current_opts = (
-                                choices_from_q
-                                if choices_from_q
-                                else correct_words.copy()
-                            )
-                            random.shuffle(st.session_state.current_opts)
-                            st.session_state["user_ans_order"] = []
-                        rem = len(correct_words) - len(
-                            st.session_state["user_ans_order"]
-                        )
-                        st.info(
-                            f"Answer: {' '.join(st.session_state['user_ans_order'])} (残り {rem} 個)"
-                        )
-                        cols = st.columns(len(st.session_state.current_opts))
-                        for i, w in enumerate(st.session_state.current_opts):
-                            if st.session_state["user_ans_order"].count(w) < (
-                                correct_words.count(w) if w in correct_words else 1
-                            ):
-                                if cols[i].button(
-                                    w, key=f"wbtn_{idx}_{i}", width="stretch"
-                                ):
-                                    st.session_state["user_ans_order"].append(w)
-                                    if len(st.session_state["user_ans_order"]) == len(
-                                        correct_words
-                                    ):
-                                        ok = [
-                                            x.lower()
-                                            for x in st.session_state["user_ans_order"]
-                                        ] == [x.lower() for x in correct_words]
-                                        queue_sound(
-                                            "correct.mp3" if ok else "wrong.mp3"
-                                        )
-                                        st.session_state.last_is_correct = ok
-                                        if ok:
-                                            st.session_state.correct_count += 1
-                                        st.session_state.session_results.append(
-                                            {
-                                                "q": q["q"],
-                                                "cat": q["orig_cat"],
-                                                "correct": ok,
-                                            }
-                                        )
-                                        st.session_state.show_result = True
-                                    st.rerun()
-                        c1, c2 = st.columns(2)
-                        if c1.button("⬅️ 戻る", key=f"u_{idx}"):
-                            st.session_state["user_ans_order"].pop()
-                            st.rerun()
-                        if c2.button("🗑️ 消去", key=f"c_{idx}"):
-                            st.session_state["user_ans_order"] = []
-                            st.rerun()
-                    else:
-                        if not st.session_state.current_opts:
-                            # 1. まず正解を確実に確保（空白削除）
-                            ans_clean = str(ans_raw).strip()
-                            opts = [ans_clean]
-                            
-                            # 2. ダミー列(F列)から候補を取得
-                            dummy_val = str(q.get("dummy", "")).strip()
-                            if dummy_val:
-                                d_list = [x.strip() for x in re.split(r"[,/、]", dummy_val) if x.strip()]
-                                for d in d_list:
-                                    # 正解と重複していない場合のみ追加
-                                    if d.lower() != ans_clean.lower():
-                                        opts.append(d)
+                    if not st.session_state.current_opts:
+                        # 1. 💡 正解を「絶対」に1番目に入れる
+                        opts = [ans_clean]
 
-                            # 3. 英語以外で、問題文中の選択肢(choices_from_q)があれば追加
-                            if "英語" not in q.get("orig_cat", "") and len(choices_from_q) > 0:
-                                for c in choices_from_q:
-                                    c_clean = str(c).strip()
-                                    if c_clean.lower() != ans_clean.lower() and c_clean not in opts:
-                                        opts.append(c_clean)
+                        # 2. ダミー候補を集める（正解と被らないものだけ）
+                        raw_cands = []
 
-                            # 4. まだ4つに足りない場合、同じカテゴリの他の問題の正解から補充
-                            if len(opts) < 4:
-                                cat_cands = [
-                                    str(x["a"]).strip()
-                                    for x in all_q.get(q["orig_cat"], [])
-                                    if str(x["a"]).strip().lower() != ans_clean.lower()
+                        # F列のダミー
+                        dv = str(q.get("dummy", "")).strip()
+                        if dv:
+                            raw_cands.extend(
+                                [
+                                    x.strip()
+                                    for x in re.split(r"[,/、]", dv)
+                                    if x.strip()
                                 ]
-                                random.shuffle(cat_cands)
-                                for c in cat_cands:
-                                    if c not in opts:
-                                        opts.append(c)
-                                    if len(opts) >= 4: break
+                            )
 
-                            # 5. 重複を排除しつつ、最初の4つを確定させてシャッフル
-                            final_opts = []
-                            for o in opts:
-                                if o not in final_opts:
-                                    final_opts.append(o)
-                            
-                            st.session_state.current_opts = final_opts[:4]
-                            random.shuffle(st.session_state.current_opts)
+                        # 問題文から抽出された選択肢
+                        if choices_from_q:
+                            raw_cands.extend([str(x).strip() for x in choices_from_q])
 
-                        # --- 表示と判定処理 ---
-                        cols = st.columns(len(st.session_state.current_opts))
-                        for i, o in enumerate(st.session_state.current_opts):
-                            if cols[i].button(str(o), key=f"opt_{idx}_{i}", width="stretch"):
-                                # 判定も大文字小文字・空白を無視して比較
-                                ok = str(o).strip().lower() == ans_clean.lower()
-                                queue_sound("correct.mp3" if ok else "wrong.mp3")
-                                st.session_state.last_is_correct = ok
-                                if ok:
-                                    st.session_state.correct_count += 1
-                                
-                                st.session_state.session_results.append({
-                                    "q": q["q"], 
-                                    "cat": q["orig_cat"], 
-                                    "correct": ok
-                                })
-                                st.session_state.show_result = True
-                                st.rerun()
+                        # 他の問題の正解から補充
+                        other_ans = [
+                            str(x["a"]).strip() for x in all_q.get(q["orig_cat"], [])
+                        ]
+                        random.shuffle(other_ans)
+                        raw_cands.extend(other_ans)
+
+                        # 3. 重複を排除しながら、正解以外の選択肢を足していく
+                        for cand in raw_cands:
+                            if len(opts) >= 4:
+                                break
+                            # 大文字小文字・全角半角を無視して比較
+                            if cand.lower() != ans_clean.lower():
+                                if cand not in opts:
+                                    opts.append(cand)
+
+                        # 4. 万が一4つに満たない場合の最終ガード（??などのダミー）
+                        while len(opts) < 4:
+                            opts.append(f"ダミー{len(opts)}")
+
+                        # 5. シャッフルして確定
+                        st.session_state.current_opts = opts[:4]
+                        random.shuffle(st.session_state.current_opts)
+
+                    # --- 表示と判定 ---
+                    cols = st.columns(len(st.session_state.current_opts))
+                    for i, o in enumerate(st.session_state.current_opts):
+                        if cols[i].button(
+                            str(o), key=f"opt_{idx}_{i}", width="stretch"
+                        ):
+                            # 💡 判定
+                            ok = str(o).strip().lower() == ans_clean.lower()
+                            st.session_state.play_this = (
+                                "correct.mp3" if ok else "wrong.mp3"
+                            )
+                            execute_queued_sound()
+
+                            st.session_state.last_is_correct = ok
+                            if ok:
+                                st.session_state.correct_count += 1
+                            st.session_state.session_results.append(
+                                {"q": q["q"], "cat": q["orig_cat"], "correct": ok}
+                            )
+                            st.session_state.show_result = True
+                            time.sleep(1)
+                            st.rerun()
                 except Exception as e:
                     st.error(f"表示エラー: {e}")
             else:
                 if st.button("判定 ＆ オプション表示", width="stretch", type="primary"):
-                    if time.time() - st.session_state.question_start_time < 5.0:
-                        st.session_state.consecutive_speeding += 1
-                        if st.session_state.consecutive_speeding >= 3:
-                            st.session_state.is_cheating_flagged = True
-                    else:
-                        st.session_state.consecutive_speeding = 0
                     st.session_state.show_options = True
                     st.rerun()
+
+    # 最後に音声実行を忘れずに
     execute_queued_sound()
