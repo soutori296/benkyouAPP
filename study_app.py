@@ -1151,99 +1151,87 @@ else:  # --- 特訓モード ---
         is_kanji_mode = "漢字" in cat
 
         if is_kanji_mode:
-            # --- 🖋️ 漢字特訓専用UI（巨大表示版） ---
+            # --- 🖋️ 漢字特訓専用UI（スキップ機能付き） ---
             ans_str = str(q["a"]).strip()
+            
+            # 画数データの読み込み（strokes列がない場合は 1画固定で回避）
             try:
-                s_list = [
-                    int(x.strip()) for x in str(q.get("strokes", "1,1")).split(",")
-                ]
+                s_list = [int(x.strip()) for x in str(q.get("strokes", "1,1")).split(",")]
             except Exception:
                 s_list = [1] * len(ans_str)
 
-            if (
-                "kanji_scores" not in st.session_state
-                or st.session_state.get("kanji_q_key") != f"{idx}_{cat}"
-            ):
+            # セッション状態の初期化
+            if "kanji_scores" not in st.session_state or st.session_state.get("kanji_q_key") != f"{idx}_{cat}":
                 st.session_state.kanji_scores = [0] * len(ans_str)
                 st.session_state.kanji_resets = [0] * len(ans_str)
                 st.session_state.kanji_q_key = f"{idx}_{cat}"
 
-            st.caption(
-                f"Mission {idx + 1}/{len(qs)} | ⭕️ {st.session_state.correct_count} | 🏷️ {cat}"
-            )
+            st.caption(f"Mission {idx + 1}/{len(qs)} | ⭕️ {st.session_state.correct_count} | 🏷️ {cat}")
             st.markdown(f"### {q['q']}")
 
-            # 巨大な文字を表示するユニット
+            # 漢字一文字ずつの入力ユニットを表示
             cols = st.columns(len(ans_str))
             for i, char in enumerate(ans_str):
                 with cols[i]:
                     score_now = st.session_state.kanji_scores[i]
-
-                    # 💡 特訓モードUI内の表示部分（差し替え）
-                    st.markdown(
-                        f"""
+                    
+                    # 巨大表示ボックス
+                    st.markdown(f"""
                         <div style='text-align:center; padding:15px; background-color:#f0f8ff; border:3px solid #4A90E2; border-radius:15px; margin-bottom:10px;'>
-                            <div style='font-size:160px; font-weight:normal; color:#1E3A5F; line-height:1.1;'>{char}</div>
+                            <div style='font-size:160px; font-weight:normal; color:#1E3A5F; line-height:1.2;'>{char}</div>
                             <div style='color:#4A90E2; font-size:18px;'>{s_list[i]}画 (習得率: {min(100, score_now)}%)</div>
                         </div>
-                    """,
-                        unsafe_allow_html=True,
-                    )
-
+                    """, unsafe_allow_html=True)
+                    
                     st.progress(min(100, score_now) / 100)
-
+                    
                     if score_now < 100:
+                        # 描画キャンバス
                         can = st_canvas(
-                            stroke_width=12,  # 💡 ペンも少し太くしました
-                            stroke_color="#000",
-                            background_color="#fff",
-                            height=300,
-                            width=300,
-                            key=f"k_can_v3_{idx}_{i}_{st.session_state.kanji_resets[i]}",
-                            display_toolbar=False,
+                            stroke_width=12,
+                            stroke_color="#000", background_color="#fff",
+                            height=300, width=300, 
+                            key=f"k_can_v4_{idx}_{i}_{st.session_state.kanji_resets[i]}",
+                            display_toolbar=False
                         )
                         c1, c2 = st.columns(2)
-                        if c1.button(
-                            "採点",
-                            key=f"k_sbtn_{idx}_{i}",
-                            type="primary",
-                            use_container_width=True,
-                        ):
+                        if c1.button(f"採点", key=f"k_sbtn_{idx}_{i}", type="primary", use_container_width=True):
                             res = get_kanji_score(can, char, s_list[i])
                             if res == -1:
-                                st.error(
-                                    f"画数エラー！({len(can.json_data['objects'])}画)"
-                                )
+                                st.error(f"画数エラー({len(can.json_data['objects'])}画)")
                             elif res > 0:
                                 st.session_state.kanji_scores[i] += res
                                 st.session_state.kanji_resets[i] += 1
-                                queue_sound("correct.mp3")
+                                # 💡 音声再生が必要な場合はここに記述
                                 st.rerun()
                             else:
                                 st.error("形が違います")
-                        if c2.button(
-                            "消す", key=f"k_rbtn_{idx}_{i}", use_container_width=True
-                        ):
+                        if c2.button(f"消す", key=f"k_rbtn_{idx}_{i}", use_container_width=True):
                             st.session_state.kanji_resets[i] += 1
                             st.rerun()
                     else:
                         st.success("Mastered!")
-                        st.markdown(
-                            "<h1 style='text-align:center; font-size:150px; color:#FF4B4B;'>💮</h1>",
-                            unsafe_allow_html=True,
-                        )
+                        st.markdown("<h1 style='text-align:center; font-size:150px; color:#FF4B4B;'>💮</h1>", unsafe_allow_html=True)
 
-            if all(s >= 100 for s in st.session_state.kanji_scores):
-                st.divider()
-                if st.button(
-                    "次の問題へ進む ➡️", use_container_width=True, type="primary"
-                ):
-                    st.session_state.session_results.append(
-                        {"q": q["q"], "cat": cat, "correct": True}
-                    )
-                    st.session_state.correct_count += 1
-                    st.session_state.index += 1
-                    st.rerun()
+            st.divider()
+            
+            # 💡 修正ポイント：ボタンを横に並べて「進む」と「スキップ」を配置
+            col_next, col_skip = st.columns(2)
+
+            # 1. 次の問題へ進む（全文字100点の場合のみ有効）
+            can_proceed = all(s >= 100 for s in st.session_state.kanji_scores)
+            if col_next.button("次の問題へ進む ➡️", use_container_width=True, type="primary", disabled=not can_proceed):
+                st.session_state.session_results.append({"q": q["q"], "cat": cat, "correct": True})
+                st.session_state.correct_count += 1 # 習熟度にカウント
+                st.session_state.index += 1
+                st.rerun()
+
+            # 2. 💡 スキップボタン（いつでも押せる）
+            if col_skip.button("この問題をスキップ ⏩", use_container_width=True):
+                # 習熟度（correct_count）は増やさず、結果を False として記録
+                st.session_state.session_results.append({"q": q["q"], "cat": cat, "correct": False})
+                st.session_state.index += 1
+                st.rerun()
         else:
             # --- 📖 通常の選択肢モード（提供された既存コードの移植） ---
             en_display, jp_display, choices_from_q = parse_order_question(
