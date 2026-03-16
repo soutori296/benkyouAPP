@@ -187,69 +187,83 @@ def compare_answers(u, c):
 
 def get_kanji_score(canvas_result, char, correct_strokes):
     """
-    ウェブ(Linux)・ローカル(Windows)両対応の最終判定エンジン
+    漢字判定エンジン（最新版）
+    - 画数チェック（±2ガード）
+    - IPAexゴシック対応（ウェブ/ローカル両用）
+    - 厳格判定：線幅8 / 合格ライン0.70
     """
-    if canvas_result.json_data is None:
+    # 1. キャンバスのデータが空の場合は 0点
+    if canvas_result.json_data is None: 
         return 0
+    
+    # 2. ユーザーが書いた画数（線の数）を取得
     user_strokes = len(canvas_result.json_data["objects"])
-
-    # 画数チェック
+    
+    # 3. 画数ガード：設定された画数と±2以上離れていたら即エラー(-1)
     try:
         if correct_strokes and str(correct_strokes).strip():
-            if abs(user_strokes - int(float(correct_strokes))) > 2:
-                return -1
+            target_s = int(float(str(correct_strokes).strip()))
+            if abs(user_strokes - target_s) > 2: 
+                return -1 
     except Exception:
+        # スプシの画数データが読み取れない場合はガードをスキップ
         pass
-
+    
+    # 4. ユーザーの描画データをマスク（白黒画像）に変換
+    # 透過チャネル(3)が 0 より大きい場所を「書かれた部分」とする
     user_mask = canvas_result.image_data[:, :, 3] > 0
-    if not np.any(user_mask):
+    if not np.any(user_mask): 
         return 0
-
+    
+    # 5. お手本（正解）マスクの作成
     size = 300
     target_img = Image.new("L", (size, size), 0)
-
-    # 💡 優先順位をつけてフォントを読み込む
+    
+    # フォントの読み込み（GitHubのfontsフォルダ ＞ Windows標準 ＞ デフォルト の順）
     font = None
-    # 1. GitHubにアップしたフォント
-    font_path = os.path.join("fonts", "ipaexg.ttf")
-    # 2. Windowsローカルの明朝体
+    font_path = os.path.join("fonts", "ipaexg.ttf") 
     win_font = r"C:\Windows\Fonts\msmincho.ttc"
-
+    
     try:
         if os.path.exists(font_path):
             font = ImageFont.truetype(font_path, 230)
         elif os.path.exists(win_font):
             font = ImageFont.truetype(win_font, 230)
         else:
-            # 💡 両方ない場合に警告を出す（デバッグ用）
-            st.error(
-                "フォントファイルが読み込めません。fontsフォルダを確認してください。"
-            )
             font = ImageFont.load_default()
-    except Exception as e:
-        st.error(f"フォント読み込みエラー: {e}")
+    except Exception:
         font = ImageFont.load_default()
-
+    
+    # お手本を黒背景に白文字で描画
     draw = ImageDraw.Draw(target_img)
-    # 判定の太さは 15 くらいが「ほどよい甘口」です
-    draw.text(
-        (size // 2, size // 2), char, font=font, fill=255, anchor="mm", stroke_width=15
-    )
+    # stroke_width=8 は「厳格」な設定です。丁寧に書く必要があります。
+    draw.text((size//2, size//2), char, font=font, fill=255, anchor="mm", stroke_width=8)
     target_mask = np.array(target_img) > 0
-
+    
+    # 6. 一致度（F-score）の計算
+    # 重なり部分を抽出
     overlap = np.logical_and(target_mask, user_mask).sum()
+    
+    # 再現率（お手本をどれだけなぞれたか）
     recall = overlap / target_mask.sum() if target_mask.sum() > 0 else 0
+    # 適合率（余計なはみ出しがないか）
     precision = overlap / user_mask.sum() if user_mask.sum() > 0 else 0
-    f_score = (
-        (2 * recall * precision) / (recall + precision)
-        if (recall + precision) > 0
-        else 0
-    )
+    
+    # F値（バランススコア）
+    if (recall + precision) > 0:
+        f_score = (2 * recall * precision) / (recall + precision)
+    else:
+        f_score = 0
 
-    if f_score > 0.65:
-        return 100
-    if f_score > 0.15:
-        return 34
+    # 7. スコア判定
+    # 0.70以上：一発合格（100点）
+    if f_score > 0.70: 
+        return 100 
+    # 0.25以上：だいたい合っている（34点 = 3回で合格）
+    if f_score > 0.25: 
+        return 34  
+    
+    # それ以下は「形が違います」
     return 0
 
 
