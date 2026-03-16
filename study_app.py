@@ -1498,46 +1498,68 @@ else:  # --- 特訓モード ---
                             st.rerun()
                     else:
                         if not st.session_state.current_opts:
-                            opts = [ans_raw]
+                            # 1. まず正解を確実に確保（空白削除）
+                            ans_clean = str(ans_raw).strip()
+                            opts = [ans_clean]
+                            
+                            # 2. ダミー列(F列)から候補を取得
                             dummy_val = str(q.get("dummy", "")).strip()
                             if dummy_val:
-                                opts.extend(
-                                    [
-                                        x.strip()
-                                        for x in re.split(r"[,/、]", dummy_val)
-                                        if x.strip()
-                                    ]
-                                )
-                            if "英語" not in q["orig_cat"] and len(choices_from_q) > 0:
-                                opts.extend(choices_from_q)
+                                d_list = [x.strip() for x in re.split(r"[,/、]", dummy_val) if x.strip()]
+                                for d in d_list:
+                                    # 正解と重複していない場合のみ追加
+                                    if d.lower() != ans_clean.lower():
+                                        opts.append(d)
+
+                            # 3. 英語以外で、問題文中の選択肢(choices_from_q)があれば追加
+                            if "英語" not in q.get("orig_cat", "") and len(choices_from_q) > 0:
+                                for c in choices_from_q:
+                                    c_clean = str(c).strip()
+                                    if c_clean.lower() != ans_clean.lower() and c_clean not in opts:
+                                        opts.append(c_clean)
+
+                            # 4. まだ4つに足りない場合、同じカテゴリの他の問題の正解から補充
                             if len(opts) < 4:
                                 cat_cands = [
-                                    str(x["a"])
+                                    str(x["a"]).strip()
                                     for x in all_q.get(q["orig_cat"], [])
-                                    if str(x["a"]) != ans_raw
+                                    if str(x["a"]).strip().lower() != ans_clean.lower()
                                 ]
                                 random.shuffle(cat_cands)
-                                opts.extend(cat_cands)
-                            opts = list(dict.fromkeys(opts))[:4]
-                            random.shuffle(opts)
-                            st.session_state.current_opts = opts
+                                for c in cat_cands:
+                                    if c not in opts:
+                                        opts.append(c)
+                                    if len(opts) >= 4: break
+
+                            # 5. 重複を排除しつつ、最初の4つを確定させてシャッフル
+                            final_opts = []
+                            for o in opts:
+                                if o not in final_opts:
+                                    final_opts.append(o)
+                            
+                            st.session_state.current_opts = final_opts[:4]
+                            random.shuffle(st.session_state.current_opts)
+
+                        # --- 表示と判定処理 ---
                         cols = st.columns(len(st.session_state.current_opts))
                         for i, o in enumerate(st.session_state.current_opts):
-                            if cols[i].button(
-                                str(o), key=f"opt_{idx}_{i}", width="stretch"
-                            ):
-                                ok = str(o).lower() == ans_raw.lower()
+                            if cols[i].button(str(o), key=f"opt_{idx}_{i}", width="stretch"):
+                                # 判定も大文字小文字・空白を無視して比較
+                                ok = str(o).strip().lower() == ans_clean.lower()
                                 queue_sound("correct.mp3" if ok else "wrong.mp3")
                                 st.session_state.last_is_correct = ok
                                 if ok:
                                     st.session_state.correct_count += 1
-                                st.session_state.session_results.append(
-                                    {"q": q["q"], "cat": q["orig_cat"], "correct": ok}
-                                )
+                                
+                                st.session_state.session_results.append({
+                                    "q": q["q"], 
+                                    "cat": q["orig_cat"], 
+                                    "correct": ok
+                                })
                                 st.session_state.show_result = True
                                 st.rerun()
-                except Exception:
-                    st.error("表示エラー")
+                except Exception as e:
+                    st.error(f"表示エラー: {e}")
             else:
                 if st.button("判定 ＆ オプション表示", width="stretch", type="primary"):
                     if time.time() - st.session_state.question_start_time < 5.0:
