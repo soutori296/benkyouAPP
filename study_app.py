@@ -1241,6 +1241,9 @@ else:  # --- 特訓モード ---
             # 💡 修正ポイント：ボタンを横に並べて「進む」と「スキップ」を配置
             col_next, col_skip = st.columns(2)
 
+            # 💡 ここで「次に進める状態か（全文字100点か）」を計算します
+            can_proceed = all(s >= 100 for s in st.session_state.kanji_scores)
+
             # 「次の問題へ進む」ボタンの中身
             if col_next.button("次の問題へ進む ➡️", use_container_width=True, type="primary", disabled=not can_proceed):
                 # 保存予約用の辞書がなければ作る
