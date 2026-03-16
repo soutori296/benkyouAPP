@@ -911,43 +911,66 @@ if not st.session_state.mode:
 
     # --- 1. 不備報告（管理者用） ---
     if db.get("reports"):
+        # スプレッドシートの空行や不完全なデータをスキップするためのループ
         for r_idx, rep in enumerate(db["reports"]):
-            if len(rep) >= 5:
-                with st.expander(f"⚠️ 報告あり: {rep[1]}"):
-                    nq = st.text_area("問題", rep[2], key=f"rq_{r_idx}")
-                    na = st.text_input("正解", rep[3], key=f"ra_{r_idx}")
-                    c1, c2 = st.columns(2)
-                    if c1.button(
-                        "✅ 修正",
-                        key=f"rbtn_{r_idx}",
-                        type="primary",
-                        use_container_width=True,
-                    ):
-                        if update_db_question_master(
-                            rep[1], rep[2], None, nq, na, None
-                        ):
-                            gc = gspread.authorize(get_creds())
-                            gc.open("study_stats_db").worksheet("reports").delete_rows(
-                                r_idx + 2
-                            )
-                            st.cache_data.clear()
-                            st.rerun()
-                    if c2.button(
-                        "🗑️ 抹消", key=f"dbtn_{r_idx}", use_container_width=True
-                    ):
+            
+            # --- 💡 データ妥当性チェック（ここが重要） ---
+            # 1. そもそもデータが空でないか
+            if not rep:
+                continue
+                
+            # 2. 辞書形式かリスト形式かに応じて「教科」を取得
+            if isinstance(rep, dict):
+                cat_name = rep.get("教科")
+                q_text = rep.get("問題")
+                a_text = rep.get("正解")
+                reason = rep.get("報告理由")
+            else:
+                # リスト形式の場合、インデックスが足りているかチェック
+                if len(rep) < 5:
+                    continue
+                cat_name = rep[1]
+                q_text = rep[2]
+                a_text = rep[3]
+                reason = rep[4]
+
+            # 教科名が空（スプシの空行など）ならスキップ
+            if not cat_name or str(cat_name).strip() == "":
+                continue
+
+            # --- 💡 表示処理 ---
+            with st.expander(f"⚠️ 報告あり: {cat_name}（{reason}）"):
+                nq = st.text_area("問題", q_text, key=f"rq_{r_idx}")
+                na = st.text_input("正解", a_text, key=f"ra_{r_idx}")
+                
+                c1, c2 = st.columns(2)
+                
+                # ✅ 修正ボタン
+                if c1.button("✅ 修正", key=f"rbtn_{r_idx}", type="primary", use_container_width=True):
+                    if update_db_question_master(cat_name, q_text, None, nq, na, None):
                         gc = gspread.authorize(get_creds())
-                        ss = gc.open("study_stats_db")
-                        sh_q = ss.worksheet("questions")
-                        recs_q = sh_q.get_all_records()
-                        for i_q, r_q in enumerate(recs_q):
-                            if str(r_q.get("category")) == str(rep[1]) and str(
-                                r_q.get("q")
-                            ) == str(rep[2]):
-                                sh_q.delete_rows(i_q + 2)
-                                break
-                        ss.worksheet("reports").delete_rows(r_idx + 2)
+                        # reportsシートから該当行を削除（ヘッダーがあるので r_idx + 2）
+                        gc.open("study_stats_db").worksheet("reports").delete_rows(r_idx + 2)
                         st.cache_data.clear()
                         st.rerun()
+                
+                # 🗑️ 抹消ボタン
+                if c2.button("🗑️ 抹消", key=f"dbtn_{r_idx}", use_container_width=True):
+                    gc = gspread.authorize(get_creds())
+                    ss = gc.open("study_stats_db")
+                    sh_q = ss.worksheet("questions")
+                    recs_q = sh_q.get_all_records()
+                    
+                    # 問題マスターから削除
+                    for i_q, r_q in enumerate(recs_q):
+                        if str(r_q.get("category")) == str(cat_name) and str(r_q.get("q")) == str(q_text):
+                            sh_q.delete_rows(i_q + 2)
+                            break
+                    
+                    # reportsシートからも削除
+                    ss.worksheet("reports").delete_rows(r_idx + 2)
+                    st.cache_data.clear()
+                    st.rerun()
 
     # --- 2. ミッション生成エリア ---
     # --- 💡 カテゴリ一覧をスプレッドシートから取得 ---
