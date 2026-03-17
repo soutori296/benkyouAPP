@@ -30,23 +30,63 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    /* 通常画面：サイドバー幅固定 */
-    [data-testid="stSidebar"] { min-width: 260px !important; max-width: 260px !important; }
+    /* サイドバーの幅を少し広げて余裕を持たせる */
+    [data-testid="stSidebar"] { 
+        min-width: 280px !important; 
+        max-width: 280px !important; 
+    }
 
-    /* 🖨️ 印刷用設定（2mロール紙 復活版） */
+    /* 共通：ラベルと数値の基本サイズと改行防止 */
+    [data-testid="stSidebar"] [data-testid="stMetricLabel"] {
+        font-size: 0.8rem !important;
+        white-space: nowrap !important;
+    }
+    [data-testid="stSidebar"] [data-testid="stMetricValue"] {
+        font-size: 1.25rem !important;
+        white-space: nowrap !important;
+    }
+
+    /* =========================================
+       💡 左カラム（全累計・到達率）
+       ヘッダーはそのまま、数値だけを「気持ち右」から始める
+       ========================================= */
+    div[data-testid="stHorizontalBlock"] > div:nth-child(1) [data-testid="stMetricLabel"] {
+        text-align: left !important;
+    }
+    div[data-testid="stHorizontalBlock"] > div:nth-child(1) [data-testid="stMetricValue"] {
+        text-align: left !important;
+        padding-left: 15px !important; /* 🌟 数値だけインデント */
+    }
+
+    /* =========================================
+       💡 右カラム（本日・解答数）
+       ヘッダーは右寄せ、数値も右寄せにしつつ「少し内側」に余白を置く
+       ========================================= */
+    div[data-testid="stHorizontalBlock"] > div:nth-child(2) [data-testid="stMetricLabel"] {
+        text-align: right !important;
+        display: flex !important;
+        justify-content: flex-end !important;
+    }
+    div[data-testid="stHorizontalBlock"] > div:nth-child(2) [data-testid="stMetricValue"],
+    div[data-testid="stHorizontalBlock"] > div:nth-child(2) [data-testid="stMetricDelta"] {
+        text-align: right !important;
+        display: flex !important;
+        justify-content: flex-end !important;
+        padding-right: 15px !important; /* 🌟 右端から少し離す */
+    }
+
+    /* 🖨️ 印刷用設定（既存の設定を完全維持） */
     @media print {
         @page { 
-            size: 210mm 3000mm; /* 💡 3mのロングロール設定 */
+            size: 210mm 3000mm; 
             margin: 15mm; 
         }
         
-        /* 💡 修正：iframe は消さない（命令系統を維持） */
         section[data-testid="stSidebar"], header, .stButton, 
         div[data-testid="stToolbar"], [data-testid="collapsedControl"] { 
             display: none !important; 
         }
         
-        /* 💡 真っ白対策：メインコンテンツを強制的に可視化 */
         .main .block-container, div[data-testid="stMainBlockContainer"], .stMain { 
             display: block !important;
             visibility: visible !important;
@@ -56,7 +96,6 @@ st.markdown(
             margin: 0 !important;
         }
 
-        /* 解答枠（ロール紙で書きやすいサイズ） */
         .answer-box { 
             border: 1.5px solid #000 !important; 
             height: 200px; 
@@ -91,9 +130,17 @@ def get_creds():
 
 
 def format_time(total_seconds):
-    m = total_seconds // 60
-    h, rem_m = m // 60, m % 60
-    return f"{h}時間{rem_m}分" if h > 0 else f"{m}分"
+    total_minutes = total_seconds // 60
+    h = total_minutes // 60
+    rem_m = total_minutes % 60
+
+    # 💡 ここに100時間越えのロジックを追加
+    if h >= 100:
+        return f"{h}時間"
+    elif h > 0:
+        return f"{h}時間{rem_m}分"
+    else:
+        return f"{rem_m}分"
 
 
 def sync_timer(elapsed_to_add=0):
@@ -385,122 +432,134 @@ def update_db_question_master(old_cat, old_q, new_rank, new_q, new_a, new_dummy)
 
 
 def batch_save_to_db(custom_mode=None, custom_qs=None):
-    try:
-        # タイマー同期
-        if st.session_state.unsynced_seconds > 0:
-            st.session_state.daily_seconds = sync_timer(
-                st.session_state.unsynced_seconds
-            )
-            st.session_state.unsynced_seconds = 0
+    # 💡 1. ペアレントモード判定（ここに追加）
+    parent_key = st.session_state.get("parent_unlock_key", "")
+    is_parent_mode = parent_key == "7777"
 
+    if is_parent_mode:
+        # スキップするが、呼び出し元が成功と判断できるようにTrueを返す
+        st.toast("👨‍🏫 ペアレントモード：保存をスキップしました", icon="🚫")
+        return True
+
+    try:
+        # 2. 通信準備
         gc = gspread.authorize(get_creds())
         ss = gc.open("study_stats_db")
+        sh_hist = ss.worksheet("history")
         today_full = datetime.now(JST).strftime("%Y/%m/%d %H:%M:%S")
 
-        # --- 1. masteryシート（習熟度）の一括更新 ---
+        # 変数の準備
+        tid = st.session_state.get("active_mission_id")
+        curr_idx = int(st.session_state.get("index", 0))
+        mode = custom_mode if custom_mode else st.session_state.mode
+        qs = (custom_qs if custom_qs else st.session_state.questions)[:30]
+
+        # --- A. 履歴（history）への書き込み ---
+        if not custom_qs and tid:
+            rn = find_row_by_id(sh_hist, tid)
+            if rn:
+                # 全問完了したかどうかの判定
+                is_completed = curr_idx >= len(qs)
+
+                if is_completed:
+                    # ✅ 全問解いたら、進捗もスコアも初期状態にリセット
+                    save_idx = 0
+                    save_sc = "未実施"
+                    msg = "ミッション完了！進捗とスコアをリセットしました"
+                    icon = "🎊"
+                else:
+                    # 🟡 途中の場合は、現在の進捗と計算したスコアを保存
+                    save_idx = curr_idx
+                    att = st.session_state.index + (
+                        1 if st.session_state.get("show_result") else 0
+                    )
+                    cor = min(st.session_state.correct_count, att)
+                    save_sc = (
+                        f"{round((cor / att) * 100, 1)}点 ({att}問中)"
+                        if att > 0
+                        else "中断"
+                    )
+                    msg = f"進捗 {curr_idx} を保存しました"
+                    icon = "✅"
+
+                # I1セルの見出しを「進捗」に固定
+                sh_hist.update_acell("I1", "進捗")
+
+                # まとめて更新（日付、得点、進捗）
+                hist_updates = [
+                    {"range": f"A{rn}", "values": [[today_full]]},  # 最新の実施時刻
+                    {"range": f"C{rn}", "values": [[save_sc]]},  # 得点 (C列)
+                    {"range": f"I{rn}", "values": [[save_idx]]},  # 進捗 (I列)
+                ]
+                sh_hist.batch_update(hist_updates)
+                st.toast(msg, icon=icon)
+            else:
+                st.error("ミッションIDがシートに見つかりません")
+
+        elif custom_qs:
+            # 新規作成時
+            uid = f"id_{uuid.uuid4().hex[:8]}"
+            sh_hist.append_row(
+                [
+                    today_full,
+                    mode,
+                    "未実施",
+                    json.dumps([q["q"] for q in qs], ensure_ascii=False),
+                    "",
+                    0,
+                    uid,
+                    "",
+                    curr_idx,
+                ]
+            )
+            st.toast("新規保存完了", icon="🚀")
+
+        # --- B. タイマー同期 ---
+        if st.session_state.unsynced_seconds > 0:
+            sync_timer(st.session_state.unsynced_seconds)
+            st.session_state.unsynced_seconds = 0
+
+        # --- C. Mastery（習熟度）の更新 ---
         if st.session_state.session_results:
             try:
                 sh_m = ss.worksheet("mastery")
                 m_recs = sh_m.get_all_records()
-            except Exception:
-                sh_m = ss.add_worksheet(title="mastery", rows="1000", cols="5")
-                sh_m.append_row(["category", "q", "score", "wrong_total", "last_date"])
-                m_recs = []
-
-            # 💡 修正ポイント：空文字 "" を 0 に変換する安全な読み込み
-            m_dict = {}
-            for i, r in enumerate(m_recs):
-                q_key = str(r.get("q", ""))
-                if not q_key:
-                    continue  # 問題文が空ならスキップ
-
-                # get("列名") が空文字 "" だったら 0 を入れる処理
-                raw_s = r.get("score")
-                raw_w = r.get("wrong_total")
-
-                m_dict[q_key] = {
-                    "row": i + 2,
-                    "s": int(raw_s) if str(raw_s).strip() != "" else 0,
-                    "w": int(raw_w) if str(raw_w).strip() != "" else 0,
+                m_dict = {
+                    str(r.get("q", "")): {"row": i + 2, "s": r.get("score", 0)}
+                    for i, r in enumerate(m_recs)
+                    if r.get("q")
                 }
 
-            updates = []
-            new_rows = []
+                m_updates = []
+                for res in st.session_state.session_results:
+                    q_txt, cat, ok = res["q"], res["cat"], res["correct"]
+                    if q_txt in m_dict:
+                        row_m = m_dict[q_txt]["row"]
+                        old_s = (
+                            int(m_dict[q_txt]["s"])
+                            if str(m_dict[q_txt]["s"]).isdigit()
+                            else 0
+                        )
+                        # 漢字以外はペナルティあり
+                        penalty = 0 if "漢字" in str(cat) else -1
+                        ns = min(5, max(0, old_s + (1 if ok else penalty)))
+                        m_updates.append({"range": f"C{row_m}", "values": [[ns]]})
+                        m_updates.append(
+                            {"range": f"E{row_m}", "values": [[today_full]]}
+                        )
 
-            for res in st.session_state.session_results:
-                q_txt, cat, ok = res["q"], res["cat"], res["correct"]
-
-                if q_txt in m_dict:
-                    idx_m = m_dict[q_txt]["row"]
-
-                    # 💡 漢字ならペナルティなし(0)、それ以外は -1
-                    penalty = 0 if "漢字" in str(cat) else -1
-
-                    ns = min(5, max(0, m_dict[q_txt]["s"] + (1 if ok else penalty)))
-                    nw = m_dict[q_txt]["w"] + (0 if ok else 1)
-
-                    updates.append({"range": f"C{idx_m}", "values": [[ns]]})  # score
-                    updates.append({"range": f"D{idx_m}", "values": [[nw]]})  # wrong
-                    updates.append({"range": f"E{idx_m}", "values": [[today_full]]})
-                else:
-                    new_rows.append(
-                        [cat, q_txt, 1 if ok else 0, 0 if ok else 1, today_full]
-                    )
-
-            if updates:
-                sh_m.batch_update(updates)
-            if new_rows:
-                sh_m.append_rows(new_rows)
-
-            st.session_state.session_results = []
-
-        # --- 2. 履歴（history）への保存処理 ---
-        sh_hist = ss.worksheet("history")
-        mode = custom_mode if custom_mode else st.session_state.mode
-        qs = (custom_qs if custom_qs else st.session_state.questions)[:30]
-        today = datetime.now(JST).strftime("%Y/%m/%d %H:%M")
-        tid = st.session_state.get("active_mission_id")
-        cheat = " ⚠️早解き" if st.session_state.is_cheating_flagged else ""
-
-        if not custom_qs and tid:
-            rn = find_row_by_id(sh_hist, tid)
-            if rn:
-                att = st.session_state.index + (
-                    1 if st.session_state.get("show_result") else 0
-                )
-                cor = min(st.session_state.correct_count, att)
-                sc_str = (
-                    f"{round((cor / att) * 100, 1)}点 ({att}問中){cheat}"
-                    if att > 0
-                    else "未実施"
-                )
-
-                hist_updates = [
-                    {"range": f"A{rn}", "values": [[today]]},
-                    {"range": f"C{rn}", "values": [[sc_str]]},
-                ]
-                sh_hist.batch_update(hist_updates)
-                st.cache_data.clear()
-                return True
-
-        uid = f"id_{uuid.uuid4().hex[:8]}"
-        sh_hist.append_row(
-            [
-                today,
-                mode,
-                "未実施",
-                json.dumps([q["q"] for q in qs], ensure_ascii=False),
-                "",
-                0,
-                uid,
-                "",
-            ]
-        )
+                if m_updates:
+                    sh_m.batch_update(m_updates)
+                st.session_state.session_results = []
+            except Exception as e:
+                st.warning(f"習熟度の更新エラー（進捗は保存済み）: {e}")
 
         st.cache_data.clear()
         return True
+
     except Exception as e:
-        st.error(f"保存エラー: {e}")
+        # 💡 Bare except を回避
+        st.error(f"致命的な保存エラー: {e}")
         return False
 
 
@@ -518,7 +577,7 @@ def load_db():
             c = str(r.get("category", "共通")).strip()
             rank_val = str(r.get("rank", "B")).upper().strip()
 
-            # 💡 修正ポイント：strokes1, strokes2... などの新しい列もすべて保持するように変更
+            # 💡 strokes1, strokes2... などの新しい列もすべて保持するように変更
             # 辞書 r（1行分の全データ）をそのままベースにして、必要なキーを整理します
             question_data = {
                 "q": str(r.get("q", "")),
@@ -536,20 +595,29 @@ def load_db():
             org.setdefault(c, []).append(question_data)
             cat_total_counts[c] = cat_total_counts.get(c, 0) + 1
 
-        # 2. 攻略済みデータ判定
+        # ==========================================
+        # 💡 2. 攻略済みデータ判定（重複排除ロジックに修正済）
+        # ==========================================
         try:
             m_rows = ss.worksheet("mastery").get_all_records()
         except Exception:
             m_rows = []
 
-        conquered_map = {}
-        total_opened_count = 0
+        conquered_sets = {}
         for m in m_rows:
             c = str(m.get("category", "共通")).strip()
+            q_text = str(m.get("q", "")).strip()  # 問題文を取得
             last_date_val = str(m.get("last_date", "")).strip()
-            if last_date_val != "":
-                conquered_map[c] = conquered_map.get(c, 0) + 1
-                total_opened_count += 1
+
+            # 日付があり、かつ問題文が存在する場合のみセットに追加
+            if last_date_val != "" and q_text != "":
+                if c not in conquered_sets:
+                    conquered_sets[c] = set()
+                conquered_sets[c].add(q_text)  # setなのでダブりは自動で弾かれる
+
+        # setの中身の数（ユニークな問題数）をカウントし、集計用辞書を作る
+        conquered_map = {cat: len(q_set) for cat, q_set in conquered_sets.items()}
+        total_opened_count = sum(conquered_map.values())
 
         # 3. 履歴・分析テーブル作成
         st_list = []
@@ -637,226 +705,126 @@ if st.session_state.unsynced_seconds >= 600:
         st.session_state.unsynced_seconds = 0
 
 
-# --- 4. サイドバー ---
+# --- 4. サイドバー修正版（V6：変数名エラー完全解消） ---
 with st.sidebar:
-    st.title("📊 STATUS")
+    # 💡 判定用
+    p_val = st.session_state.get("parent_unlock_key", "")
+    is_parent_mode = p_val == "7777"
 
-    # 💡 1段目：時間
-    col1, col2 = st.columns(2)
-    col1.metric("🕰️ 全累計時間", format_time(st.session_state.total_seconds))
-    col2.metric("⌚ 本日勉強", format_time(st.session_state.daily_seconds))
+    if is_parent_mode:
+        st.error("🚨 ペアレントモード実行中")
+    else:
+        st.success("📖 学習モード：記録中")
 
-    # 💡 2段目：到達率と解答数
-    col3, col4 = st.columns(2)
-    col3.metric(
-        "🎯 総合到達",
-        f"{db.get('overall_avg', 0.0)}%",
-        delta=f"{db.get('overall_delta', 0.0)}%",
-    )
+    # 📊 STATUS
+    with st.container(border=True):
+        st.markdown(
+            "<h3 style='margin:0; text-align:center;'>📊 STATUS</h3>",
+            unsafe_allow_html=True,
+        )
+        c1, c2 = st.columns(2, gap="small")
+        c1.metric("🕰️ 全累計", format_time(st.session_state.total_seconds))
+        c2.metric("⌚ 本日分", format_time(st.session_state.daily_seconds))
+        c3, c4 = st.columns(2, gap="small")
+        c3.metric("🎯 到達率", f"{db.get('overall_avg', 0.0)}%")
 
-    # --- 累計解答数の計算（強制ダイレクト読み込み版） ---
-    # --- 💡 修正後：キャッシュされたデータ(db)から計算する軽量版 ---
-    total_q_all = 0
-    # すでに load_db() で取得済みのデータを利用します
-    if "cat_stats" in db:
-        # 各カテゴリの「開拓状況」から分子の数字を合計する
-        for stat in db["cat_stats"]:
-            try:
-                # "3 / 265" のような文字列から "3" を取り出す
-                opened_val = int(stat["開拓状況"].split(" / ")[0])
-                total_q_all += opened_val
-            except Exception:
-                continue
+        total_q_all = 0
+        if "cat_stats" in db:
+            for stat in db["cat_stats"]:
+                try:
+                    total_q_all += int(stat["開拓状況"].split(" / ")[0])
+                except (ValueError, KeyError, IndexError):
+                    continue
+        c4.metric("📝 解答数", f"{total_q_all}問")
 
-    col4.metric("📝 累計解答", f"{total_q_all}問")
+    # 📈 カテゴリ別進捗
+    st.write("**📈 カテゴリ別進捗**")  # markdownより余白が少ない
+    if db.get("cat_stats"):
+        st.dataframe(
+            pd.DataFrame(db["cat_stats"]),
+            hide_index=True,
+            use_container_width=True,
+            height=200,
+        )
 
-    st.divider()
+    # 🛠️ 操作パネル（標準のcolumnsのみで構成）
+    with st.container(border=True):
+        st.markdown(
+            "<p style='margin:0; font-weight:bold; text-align:center;'>🛠️ 操作パネル</p>",
+            unsafe_allow_html=True,
+        )
 
-    # 1. 同期ボタン
-    if st.button("🔄 同期", width="stretch", key="sync_button_top"):
-        st.cache_data.clear()
-        st.rerun()
+        is_training = st.session_state.mode is not None
 
-    # 2. 特訓中のみ出現するボタン（同期ボタンの直下）
-    if st.session_state.mode:
-        st.write("")
-        # --- 🏳️ 中断・終了ボタン ---
-        if st.button(
-            "🏳️ 中断セーブして終了",
-            key="save_exit_btn",
-            width="stretch",
-            type="primary",
-            disabled=st.session_state.is_saving,
-        ):
-            with st.status("💾 データを一括セーブ中...", expanded=False) as status:
-                st.session_state.is_saving = True
+        # --- 段1：同期・保存 ---
+        col_m1, col_m2 = st.columns(2, gap="small")
+        with col_m1:
+            if st.button("🔄 同期", use_container_width=True, key="side_sync_v14"):
+                st.cache_data.clear()
+                st.rerun()
+        with col_m2:
+            if st.button(
+                "💾 保存",
+                use_container_width=True,
+                key="side_save_v14",
+                disabled=not is_training or is_parent_mode,
+            ):
+                batch_save_to_db()
 
-                # 💡【NEW】「次へ」を押していない💮の問題も自動でセーブ対象に加える
-                # 全文字100点かつ、まだセーブリストに載っていない場合に実行
-                if "kanji_scores" in st.session_state and all(
-                    s >= 100 for s in st.session_state.kanji_scores
+        # --- 段2：終了・中断 ---
+        c_nav1, c_nav2 = st.columns(2, gap="small")
+        with c_nav1:
+            if st.session_state.get("print_data"):
+                if st.button("⬅️ 本部", use_container_width=True, key="side_back_v14"):
+                    st.session_state.print_data = None
+                    st.rerun()
+            else:
+                if st.button(
+                    "🏠 終了",
+                    use_container_width=True,
+                    key="side_home_v14",
+                    disabled=not is_training,
                 ):
-                    idx = st.session_state.index
-                    if idx < len(st.session_state.questions):
-                        q_now = st.session_state.questions[idx]
-                        # 重複してスコアが増えるのを防ぐチェック
-                        if not any(
-                            res["q"] == q_now["q"]
-                            for res in st.session_state.session_results
-                        ):
-                            st.session_state.session_results.append(
-                                {
-                                    "q": q_now["q"],
-                                    "cat": q_now.get("orig_cat", ""),
-                                    "correct": True,
-                                }
-                            )
-
-                # 音声演出
-                queue_sound("correct.mp3")
-                execute_queued_sound()
-
-                # 💡 通信1回で済む爆速版の保存処理を実行
-                success = batch_save_to_db()
-
-                if success:
-                    # 💡 保存成功時のみキャッシュをクリア
-                    st.cache_data.clear()
-
-                    status.update(
-                        label="✅ セーブ完了！", state="complete", expanded=False
-                    )
+                    st.session_state.mode = None
+                    st.rerun()
+        with c_nav2:
+            if st.button(
+                "🏳️ 中断",
+                use_container_width=True,
+                type="primary",
+                key="side_exit_v14",
+                disabled=not is_training or st.session_state.is_saving,
+            ):
+                with st.status("セーブ中...", expanded=False):
+                    st.session_state.is_saving = True
+                    batch_save_to_db()
                     st.session_state.mode = None
                     st.session_state.is_saving = False
                     st.rerun()
-                else:
-                    status.update(label="❌ セーブ失敗", state="error")
-                    st.session_state.is_saving = False
-                    st.error(
-                        "通信エラーが発生しました。時間を置いて再度お試しください。"
-                    )
 
-        # --- 🚨 不備報告機能（軽量版） ---
-        idx_s = st.session_state.index
-        if idx_s < len(st.session_state.questions):
-            cur = st.session_state.questions[idx_s]
-            with st.expander("🚨 不備報告"):
-                msg = st.text_input("内容", key=f"rpt_input_{idx_s}")
-                if st.button("送信", key=f"rpt_send_btn_{idx_s}", width="stretch"):
-                    if msg:
-                        # 💡 認証処理を「if msg:」の中に移動。これで普段は一切通信しません。
-                        try:
-                            # 送信時のみ認証・接続
-                            gc_rpt = gspread.authorize(get_creds())
-                            sh_r = gc_rpt.open("study_stats_db").worksheet("reports")
+        # --- 段3：設定・報告 ---
+        co1, co2 = st.columns([1.2, 1], gap="small")
+        with co1:
+            st.session_state.sound_enabled = st.toggle(
+                "🔊 音声", value=st.session_state.sound_enabled, key="side_sound_v14"
+            )
+        with co2:
+            if st.button(
+                "🚨 報告",
+                use_container_width=True,
+                key="side_rpt_v14",
+                disabled=not is_training,
+            ):
+                st.session_state["show_rpt_expander"] = not st.session_state.get(
+                    "show_rpt_expander", False
+                )
 
-                            sh_r.append_row(
-                                [
-                                    datetime.now(JST).strftime("%Y/%m/%d %H:%M"),
-                                    cur.get("orig_cat", "不明"),
-                                    cur.get("q", "不明"),
-                                    cur.get("a", "不明"),
-                                    msg,
-                                ]
-                            )
-                            st.toast("報告受理", icon="✅")
-                        except Exception as e:
-                            st.toast(f"報告失敗: {e}", icon="⚠️")
-
-    # 3. カテゴリ別分析（常時表示）
-    st.subheader("📈 カテゴリ別分析")
-    if db.get("cat_stats"):
-        st.dataframe(pd.DataFrame(db["cat_stats"]), hide_index=True, width="stretch")
-
-    st.divider()
-
-    # 4. 印刷戻るボタン
-    if st.session_state.print_data:
-        if st.button(
-            "⬅️ 本部へ戻る",
-            type="secondary",
-            width="stretch",
-            key="back_to_main_btn",
-        ):
-            st.session_state.print_data = None
-            st.rerun()
-
-    # 5. 設定（サウンド有効）
-    # 💡 修正：重複エラー回避のため key を指定
-    st.session_state.sound_enabled = st.toggle(
-        "🔊 サウンド有効",
-        value=st.session_state.sound_enabled,
-        key="side_sound_toggle_unique",
-    )
-
-    # 6. 解答ロック解除キー（一番下）
-    # 💡 CSSを追加して、特定のキーを持つ入力欄の文字を「●」にする
+    # 🗝️ 解答ロック解除キー
     st.markdown(
-        """
-        <style>
-        /* parent_unlock_key というキーを持つ入力欄の文字をドットにする */
-        input[aria-label="🗝️ 解答ロック解除キー"] {
-            -webkit-text-security: disc !important;
-        }
-        </style>
-        """,
+        """<style>input[aria-label="🗝️ 解答ロック解除キー"] {-webkit-text-security: disc !important;}</style>""",
         unsafe_allow_html=True,
     )
-
-    st.write("")
-    unlock_key = st.text_input(
-        "🗝️ 解答ロック解除キー",
-        placeholder="キーを入力...",
-        # 💡 type="password" は書かない（Chrome対策）
-        key="parent_unlock_key",
-    )
-
-    # 🏳️ 中断・不備報告（特訓モード中のみ表示）
-    if st.session_state.mode:
-        if st.button(
-            "🏳️ 中断セーブして終了",
-            width="stretch",
-            type="primary",
-            disabled=st.session_state.is_saving,
-        ):
-            with st.status("💾 セーブ中...", expanded=False):
-                st.session_state.is_saving = True
-                queue_sound("correct.mp3")
-                execute_queued_sound()
-                batch_save_to_db()
-                st.session_state.mode = None
-                st.rerun()
-
-        # 🚨 不備報告機能
-        idx_s = st.session_state.index
-        if idx_s < len(st.session_state.questions):
-            cur = st.session_state.questions[idx_s]
-            with st.expander("🚨 不備報告"):
-                msg = st.text_input("不備内容（誤植など）", key=f"rpt_{idx_s}")
-                if st.button(
-                    "送信", key=f"btn_rpt_{idx_s}", width="stretch"
-                ):  # ← ここを修正
-                    if msg:
-                        try:
-                            sh_r = (
-                                gspread.authorize(get_creds())
-                                .open("study_stats_db")
-                                .worksheet("reports")
-                            )
-                            sh_r.append_row(
-                                [
-                                    datetime.now(JST).strftime("%Y/%m/%d %H:%M"),
-                                    cur.get("orig_cat", "不明"),
-                                    cur.get("q", "不明"),
-                                    cur.get("a", "不明"),
-                                    msg,
-                                ]
-                            )
-                            st.toast("報告を受理しました", icon="✅")
-                        except Exception:
-                            st.error("送信に失敗しました")
-                    else:
-                        st.warning("内容を入力してください")
+    st.text_input("🗝️ 解答ロック解除キー", placeholder="key...", key="parent_unlock_key")
 
 # --- 5. メイン画面：PDFモード ---
 # --- 印刷用表示モード ---
@@ -1129,7 +1097,14 @@ if not st.session_state.mode:
                             ):
                                 st.session_state.active_mission_id = tid
                                 st.session_state.questions = load_h_qs(h)
-                                st.session_state.index = 0
+
+                                # 💡 修正：0固定ではなく、スプレッドシートの「進捗」列から読み込む
+                                # ※スプシのI列1行目に「進捗」と書いてあることが前提です
+                                saved_idx = h.get("進捗", 0)
+                                st.session_state.index = (
+                                    int(saved_idx) if str(saved_idx).isdigit() else 0
+                                )
+
                                 st.session_state.correct_count = 0
                                 st.session_state.mode = h["教科"]
                                 st.session_state.question_start_time = time.time()
@@ -1149,7 +1124,7 @@ if not st.session_state.mode:
                             if c_pa.button(
                                 "🔑 解答", key=f"pa_{tid}", use_container_width=True
                             ):
-                                if unlock_key == "7777":
+                                if st.session_state.get("parent_unlock_key") == "7777":
                                     st.session_state.print_data = {
                                         "mode": h["教科"],
                                         "id": tid,
