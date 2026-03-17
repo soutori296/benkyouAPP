@@ -42,7 +42,7 @@ st.markdown(
         white-space: nowrap !important;
     }
     [data-testid="stSidebar"] [data-testid="stMetricValue"] {
-        font-size: 1.25rem !important;
+        font-size: 1rem !important;
         white-space: nowrap !important;
     }
 
@@ -55,7 +55,7 @@ st.markdown(
     }
     div[data-testid="stHorizontalBlock"] > div:nth-child(1) [data-testid="stMetricValue"] {
         text-align: left !important;
-        padding-left: 15px !important; /* 🌟 数値だけインデント */
+        padding-left: 5px !important; /* 🌟 数値だけインデント */
     }
 
     /* =========================================
