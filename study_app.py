@@ -463,64 +463,99 @@ def batch_save_to_db(custom_mode=None, custom_qs=None):
         qs = (custom_qs if custom_qs else st.session_state.questions)[:30]
 
         # --- A. 履歴（history）への書き込み ---
+        # --- 2. 履歴（history）への保存処理 ---
+        sh_hist = ss.worksheet("history")
+        mode = custom_mode if custom_mode else st.session_state.mode
+        qs = custom_qs if custom_qs else st.session_state.questions
+        curr_idx = st.session_state.index
+
         if not custom_qs and tid:
             rn = find_row_by_id(sh_hist, tid)
             if rn:
-                # 全問完了したかどうかの判定
+                # 💡 1. 完了判定（最後まで解いたら進捗を0に戻して再挑戦可能に）
                 is_completed = curr_idx >= len(qs)
+                save_idx = 0 if is_completed else curr_idx
 
-                if is_completed:
-                    # ✅ 全問解いたら、進捗もスコアも初期状態にリセット
-                    save_idx = 0
-                    save_sc = "未実施"
-                    msg = "ミッション完了！進捗とスコアをリセットしました"
-                    icon = "🎊"
+                # 💡 2. 今回のスコアを計算
+                att = st.session_state.index + (
+                    1 if st.session_state.get("show_result") else 0
+                )
+                cor = min(st.session_state.correct_count, att)
+                new_score_val = round((cor / att) * 100, 1) if att > 0 else 0
+
+                # 💡 3. スプレッドシートから「現在の最高記録」を取得して比較
+                current_row = sh_hist.row_values(rn)
+                # C列(Index 2)から既存の得点を取得
+                current_score_str = current_row[2] if len(current_row) > 2 else ""
+
+                # 「80.5点 (30問中)」のような文字列から数字だけを取り出す
+                try:
+                    current_score_val = float(
+                        re.findall(r"(\d+\.?\d*)", current_score_str)[0]
+                    )
+                except Exception:
+                    current_score_val = -1.0  # 記録がない場合
+
+                # 💡 4. 自己ベスト更新（または初回）の場合のみスコアを更新
+                if new_score_val >= current_score_val:
+                    cheat = " ⚠️早解き" if st.session_state.is_cheating_flagged else ""
+                    save_sc = f"{new_score_val}点 ({att}問中){cheat}"
+                    msg = (
+                        "🏅 自己ベスト更新！記録を保存しました"
+                        if is_completed
+                        else f"進捗 {curr_idx} を保存しました"
+                    )
+                    icon = "🎊" if is_completed else "✅"
                 else:
-                    # 🟡 途中の場合は、現在の進捗と計算したスコアを保存
-                    save_idx = curr_idx
-                    att = st.session_state.index + (
-                        1 if st.session_state.get("show_result") else 0
+                    # ベスト未更新ならスコア文字列は既存のものを維持
+                    save_sc = current_score_str
+                    msg = (
+                        "ミッション完了！（最高点は維持されました）"
+                        if is_completed
+                        else f"進捗 {curr_idx} を保存しました"
                     )
-                    cor = min(st.session_state.correct_count, att)
-                    save_sc = (
-                        f"{round((cor / att) * 100, 1)}点 ({att}問中)"
-                        if att > 0
-                        else "中断"
-                    )
-                    msg = f"進捗 {curr_idx} を保存しました"
-                    icon = "✅"
+                    icon = "🏁" if is_completed else "✅"
 
                 # I1セルの見出しを「進捗」に固定
                 sh_hist.update_acell("I1", "進捗")
 
-                # まとめて更新（日付、得点、進捗）
+                # 💡 5. まとめて更新（日付、得点、進捗）
                 hist_updates = [
-                    {"range": f"A{rn}", "values": [[today_full]]},  # 最新の実施時刻
-                    {"range": f"C{rn}", "values": [[save_sc]]},  # 得点 (C列)
-                    {"range": f"I{rn}", "values": [[save_idx]]},  # 進捗 (I列)
+                    {"range": f"A{rn}", "values": [[today_full]]},  # 実施日を更新
+                    {"range": f"C{rn}", "values": [[save_sc]]},  # 最高得点を保持/更新
+                    {
+                        "range": f"I{rn}",
+                        "values": [[save_idx]],
+                    },  # 完了なら0、途中なら現在の進捗
                 ]
                 sh_hist.batch_update(hist_updates)
+
+                # 💡 6. 完了してもIDを消さない（これでメイン画面の保存ボタンが効くようになります）
+                if is_completed:
+                    # st.session_state.current_tid = None  <-- ここを消すかコメントアウトすることでIDを保持
+                    pass
+
                 st.toast(msg, icon=icon)
             else:
                 st.error("ミッションIDがシートに見つかりません")
 
         elif custom_qs:
-            # 新規作成時
+            # 新規ミッション作成時
             uid = f"id_{uuid.uuid4().hex[:8]}"
             sh_hist.append_row(
                 [
-                    today_full,
-                    mode,
-                    "未実施",
-                    json.dumps([q["q"] for q in qs], ensure_ascii=False),
-                    "",
-                    0,
-                    uid,
-                    "",
-                    curr_idx,
+                    today_full,  # A: 日付
+                    mode,  # B: 教科
+                    "未実施",  # C: 得点（初期値）
+                    json.dumps([q["q"] for q in qs], ensure_ascii=False),  # D: リスト
+                    "",  # E: メモ
+                    0,  # F: (予備)
+                    uid,  # G: ID
+                    "",  # H: 除外
+                    0,  # I: 進捗初期値
                 ]
             )
-            st.toast("新規保存完了", icon="🚀")
+            st.toast("新規ミッションをリストに追加しました", icon="🚀")
 
         # --- B. タイマー同期 ---
         if st.session_state.unsynced_seconds > 0:
@@ -803,7 +838,7 @@ with st.sidebar:
                 key="side_exit_v14",
                 disabled=not is_training or st.session_state.is_saving,
             ):
-                with st.status("セーブ中...", expanded=False):
+                with st.status("保存", expanded=False):
                     st.session_state.is_saving = True
                     batch_save_to_db()
                     st.session_state.mode = None
@@ -835,33 +870,34 @@ with st.sidebar:
             with st.container(border=True):
                 st.markdown("**🚨 問題の不備を報告**")
                 msg = st.text_input("誤植・内容の不備など", key=f"rpt_input_{idx_s}")
+
                 if st.button(
                     "送信する",
                     key=f"rpt_send_btn_{idx_s}",
                     type="primary",
                     use_container_width=True,
                 ):
-                    if msg:
-                        try:
-                            gc_rpt = gspread.authorize(get_creds())
-                            sh_r = gc_rpt.open("study_stats_db").worksheet("reports")
-                            sh_r.append_row(
-                                [
-                                    datetime.now(JST).strftime("%Y/%m/%d %H:%M"),
-                                    cur.get("orig_cat", "不明"),
-                                    cur.get("q", "不明"),
-                                    cur.get("a", "不明"),
-                                    msg,
-                                ]
-                            )
-                            st.toast("報告を受理しました！", icon="✅")
-                            # 送信したら自動で閉じる
-                            st.session_state["show_rpt_expander"] = False
-                            st.rerun()
-                        except Exception as e:
-                            st.toast(f"通信エラー: {e}", icon="⚠️")
-                    else:
-                        st.warning("内容を入力してください")
+                    try:
+                        gc_rpt = gspread.authorize(get_creds())
+                        sh_r = gc_rpt.open("study_stats_db").worksheet("reports")
+                        sh_r.append_row(
+                            [
+                                datetime.now(JST).strftime("%Y/%m/%d %H:%M"),
+                                cur.get("orig_cat", "不明"),
+                                cur.get("q", "不明"),
+                                cur.get("a", "不明"),
+                                msg if msg else "(コメントなし)",
+                            ]
+                        )
+
+                        # 💡 修正：これを追加してトップに即反映させる
+                        st.cache_data.clear()
+
+                        st.toast("報告を受理しました！", icon="✅")
+                        st.session_state["show_rpt_expander"] = False
+                        st.rerun()
+                    except Exception as e:
+                        st.toast(f"通信エラー: {e}", icon="⚠️")
 
     # 🗝️ 解答ロック解除キー
     st.markdown(
@@ -1148,6 +1184,10 @@ if not st.session_state.mode:
     h_list = db.get("history", [])
 
     if h_list:
+        # 💡 一括削除用の管理状態を初期化
+        if "delete_list" not in st.session_state:
+            st.session_state.delete_list = []
+
         now_d = datetime.now(JST).date()
         start_w = now_d - timedelta(days=now_d.weekday())
         gps = {"📌 今週": [], "📌 先週": [], "📌 アーカイブ": []}
@@ -1165,6 +1205,34 @@ if not st.session_state.mode:
             except Exception:
                 gps["📌 アーカイブ"].append(h)
 
+        # 💡 画面最上部に「一括削除実行」ボタンを表示
+        if st.session_state.delete_list:
+            if st.button(
+                f"🗑️ 選択した {len(st.session_state.delete_list)} 件を一括削除する",
+                type="primary",
+                use_container_width=True,
+            ):
+                try:
+                    gc = gspread.authorize(get_creds())
+                    sh_h = gc.open("study_stats_db").worksheet("history")
+
+                    # 💡 行番号がずれないよう、後ろの行から順番に削除
+                    all_ids_in_sheet = sh_h.col_values(7)  # ID列
+                    rows_to_delete = []
+                    for target_id in st.session_state.delete_list:
+                        if target_id in all_ids_in_sheet:
+                            rows_to_delete.append(all_ids_in_sheet.index(target_id) + 1)
+
+                    for r_num in sorted(rows_to_delete, reverse=True):
+                        sh_h.delete_rows(r_num)
+
+                    st.session_state.delete_list = []
+                    st.cache_data.clear()
+                    st.toast("一括削除が完了しました", icon="✅")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"削除エラー: {e}")
+
         flat_all = [q for q_list in all_q.values() for q in q_list]
 
         for lbl, items in gps.items():
@@ -1175,9 +1243,25 @@ if not st.session_state.mode:
                     for h in items:
                         tid = h.get("ID")
                         with st.container(border=True):
-                            c_info, c_go, c_sp, c_pq, c_pa, c_del = st.columns(
-                                [3.0, 1.2, 1.0, 0.8, 0.8, 0.5]
+                            # 💡 修正：右端に c_del を追加し、比率を調整しました
+                            c_sel, c_info, c_go, c_sp, c_pq, c_pa, c_del = st.columns(
+                                [0.4, 2.6, 1.2, 1.0, 0.8, 0.8, 0.5]
                             )
+
+                            # 💡 修正：チェックを入れた瞬間に画面を更新して件数を正しく表示させる
+                            is_checked = c_sel.checkbox(
+                                "", key=f"sel_{tid}", label_visibility="collapsed"
+                            )
+
+                            in_list = tid in st.session_state.delete_list
+
+                            if is_checked and not in_list:
+                                st.session_state.delete_list.append(tid)
+                                st.rerun()  # ⬅️ これで上の「◯件を一括削除」ボタンの数字が即座に増えます
+                            elif not is_checked and in_list:
+                                st.session_state.delete_list.remove(tid)
+                                st.rerun()  # ⬅️ これで数字が即座に減ります
+
                             c_info.markdown(
                                 f"**{h['日付']}** | 🆔 `{tid}`<br>{h['教科']} ({h['得点']})",
                                 unsafe_allow_html=True,
@@ -1201,6 +1285,7 @@ if not st.session_state.mode:
                                     if q and (i + 1) not in skip
                                 ]
 
+                            # 1245行目付近の修正
                             if c_go.button(
                                 "🔄 特訓開始",
                                 key=f"go_{tid}",
@@ -1208,17 +1293,22 @@ if not st.session_state.mode:
                                 use_container_width=True,
                             ):
                                 st.session_state.active_mission_id = tid
+                                st.session_state.current_tid = tid  # ID管理を統一
                                 st.session_state.questions = load_h_qs(h)
 
-                                # 💡 修正：0固定ではなく、スプレッドシートの「進捗」列から読み込む
-                                # ※スプシのI列1行目に「進捗」と書いてあることが前提です
                                 saved_idx = h.get("進捗", 0)
                                 st.session_state.index = (
                                     int(saved_idx) if str(saved_idx).isdigit() else 0
                                 )
-
                                 st.session_state.correct_count = 0
-                                st.session_state.mode = h["教科"]
+                                st.session_state.show_result = False
+
+                                # 💡 ここを "training" に書き換えてください
+                                st.session_state.custom_mode = h[
+                                    "教科"
+                                ]  # 教科名は別で保持
+                                st.session_state.mode = "training"
+
                                 st.session_state.question_start_time = time.time()
                                 st.rerun()
 
@@ -1311,22 +1401,18 @@ else:  # --- 特訓モード ---
             ) = 0, 0, False
             st.session_state.show_options, st.session_state.current_opts = False, []
             st.rerun()
+        # 1307行目付近：完了画面のボタン
         if c_sv.button(
-            "💾 保存して本部へ戻る",
-            type="primary",
-            width="stretch",
-            disabled=st.session_state.is_saving,
+            "💾 保存して本部へ戻る", type="primary", use_container_width=True
         ):
-            msg_area = st.empty()
-            msg_area.warning("⚠️ 保存中... ブラウザを閉じずにお待ちください")
-            time.sleep(0.1)
-            st.session_state.is_saving = True
-            queue_sound("correct.mp3")
-            execute_queued_sound()
             batch_save_to_db()
-            msg_area.success("✅ 保存が完了しました！")
-            time.sleep(0.8)
-            st.session_state.mode = None
+            st.session_state.questions = []
+            st.session_state.current_tid = None
+
+            # 💡 修正："main" ではなく None（空っぽ）にする
+            st.session_state.mode = None  # ⬅️ これで確実に本部に戻れます
+
+            st.cache_data.clear()
             st.rerun()
     else:
         q = qs[idx]
