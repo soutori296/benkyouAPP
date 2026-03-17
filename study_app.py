@@ -1568,10 +1568,13 @@ else:  # --- 特訓モード ---
                         Counter(st.session_state.reorder_ans),
                         Counter(shuffled_words),
                     )
-                    cols = st.columns(min(len(shuffled_words), 5), gap="small")
+                    max_cols = 8  # 💡 8語まで1行に収まるように調整
+                    cols = st.columns(max_cols, gap="small")
+
                     for i, w in enumerate(shuffled_words):
                         if u_cnt[w] < t_cnt[w]:
-                            if cols[i % 5].button(
+                            # 💡 use_container_width=True を削除し、ボタンをコンパクトにします
+                            if cols[i % max_cols].button(
                                 w, key=f"re_btn_{idx}_{i}_{w}", use_container_width=True
                             ):
                                 st.session_state.reorder_ans.append(w)
