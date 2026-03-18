@@ -1518,8 +1518,8 @@ else:  # --- 特訓モード：音質復旧 ＆ 遷移リセット徹底 ＆ Ruf
             )
 
             with st.container(border=True):
-                # 高さ：並べ替え200 / 数学500 / その他350
-                canvas_h = 200 if is_order else (500 if "数学" in cat else 350)
+                # 高さ：並べ替え200 / 数学450 / その他350
+                canvas_h = 200 if is_order else (450 if "数学" in cat else 350)
                 tool_now = st.session_state.get(f"tl_{idx}", "🖋️")
                 p_c, p_w = ("#000000", 5) if tool_now == "🖋️" else ("#f8f9fb", 35)
                 st_canvas(
