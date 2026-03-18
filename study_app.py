@@ -1,11 +1,11 @@
 import streamlit as st
-import base64
+import base64  # 🌟 173行目で必要なため復活
 import os
 import time
 import re
 import random
 import json
-import uuid
+import uuid  # 🌟 411行目で必要なため復活
 from datetime import datetime, timedelta, timezone
 import pandas as pd
 import gspread
@@ -249,29 +249,40 @@ def get_skip_indices(text):
 
 
 def get_kanji_score(canvas_result, char, correct_strokes):
-    if canvas_result.json_data is None:
+    if canvas_result is None or canvas_result.json_data is None:
         return 0
+
+    # 1. 画数チェック（ここは維持：±2画）
     user_strokes = len(canvas_result.json_data["objects"])
     try:
         if correct_strokes and str(correct_strokes).strip().isdigit():
-            if abs(user_strokes - int(float(correct_strokes))) > 2:
+            target_s = int(float(correct_strokes))
+            if abs(user_strokes - target_s) > 2:
                 return -1
     except Exception:
         pass
 
+    # 2. マスク準備
     size = 300
-    user_mask = canvas_result.image_data[:, :, 3] > 0
-    if user_mask.shape != (size, size):
-        img_tmp = Image.fromarray(user_mask).resize((size, size))
-        user_mask = np.array(img_tmp)
+    user_mask_raw = canvas_result.image_data[:, :, 3] > 0
+    img_tmp = Image.fromarray(user_mask_raw).resize((size, size))
+    user_mask = np.array(img_tmp)
 
+    if user_mask.sum() == 0:
+        return 0
+
+    # 3. お手本描画（フォント優先順位：fonts/ipaexg.ttf を最優先）
     target_img = Image.new("L", (size, size), 0)
     font = None
-    fps = [os.path.join("fonts", "ipaexg.ttf"), r"C:\Windows\Fonts\msmincho.ttc"]
+    fps = [
+        os.path.join("fonts", "ipaexg.ttf"),
+        r"C:\Windows\Fonts\msgothic.ttc",
+        r"C:\Windows\Fonts\msmincho.ttc",
+    ]
     for fp in fps:
         if os.path.exists(fp):
             try:
-                font = ImageFont.truetype(fp, 230)
+                font = ImageFont.truetype(fp, 210)
                 break
             except Exception:
                 continue
@@ -280,10 +291,17 @@ def get_kanji_score(canvas_result, char, correct_strokes):
 
     draw = ImageDraw.Draw(target_img)
     draw.text(
-        (size // 2, size // 2), char, font=font, fill=255, anchor="mm", stroke_width=8
+        (size // 2, size // 2), char, font=font, fill=255, anchor="mm", stroke_width=2
     )
     target_mask = np.array(target_img) > 0
 
+    # 4. 形状チェック（バウンディングボックス）
+    rows = np.any(user_mask, axis=1)
+    cols = np.any(user_mask, axis=0)
+    ymin, ymax = np.where(rows)[0][[0, -1]]
+    xmin, xmax = np.where(cols)[0][[0, -1]]
+
+    # 5. 一致度計算 (F-Score)
     overlap = np.logical_and(target_mask, user_mask).sum()
     recall = overlap / target_mask.sum() if target_mask.sum() > 0 else 0
     precision = overlap / user_mask.sum() if user_mask.sum() > 0 else 0
@@ -293,10 +311,20 @@ def get_kanji_score(canvas_result, char, correct_strokes):
         else 0
     )
 
-    if f_score > 0.70:
+    # 6. 🌟 yoshiリカバリー・プロトコル：判定を少し緩く 🌟
+    if f_score > 0.70:  # 以前は0.75
         return 100
-    if f_score > 0.25:
+    elif f_score > 0.35:  # 以前は0.45
+        return 66
+    elif f_score > 0.12:  # 以前は0.18
+        # 中央距離チェックも100pxまで緩和（以前は80px）
+        center_dist = abs((xmin + xmax) / 2 - size / 2) + abs(
+            (ymin + ymax) / 2 - size / 2
+        )
+        if center_dist > 100:
+            return 0
         return 34
+
     return 0
 
 
@@ -1144,8 +1172,42 @@ if not st.session_state.mode:
 
     st.divider()
 
+    # =============================================================================
+    # 11. メイン画面：本部（一括削除バー ＆ ゴミ箱撤廃版）
+    # =============================================================================
     st.subheader("📅 MISSION LOG")
-    # ... (履歴表示と削除・保存ロジック：以前の正常なものを維持)
+
+    # 🌟 1. 選択中がある時だけ出現する「一括削除バー」
+    if st.session_state.get("delete_list"):
+        with st.container(border=True):
+            c_msg, c_btn = st.columns([3, 1])
+            c_msg.warning(
+                f"⚠️ {len(st.session_state.delete_list)}件を選択中。削除すると元に戻せません。"
+            )
+            if c_btn.button(
+                "🔥 選択中を一括削除", type="primary", use_container_width=True
+            ):
+                try:
+                    gc = gspread.authorize(get_creds())
+                    sh_h = gc.open("study_stats_db").worksheet("history")
+                    all_ids = sh_h.col_values(7)
+                    rows_to_del = sorted(
+                        [
+                            all_ids.index(tid) + 1
+                            for tid in st.session_state.delete_list
+                            if tid in all_ids
+                        ],
+                        reverse=True,
+                    )
+                    for r_idx in rows_to_del:
+                        sh_h.delete_rows(r_idx)
+                    st.session_state.delete_list = []
+                    st.cache_data.clear()
+                    st.toast("一括削除を完了しました", icon="🗑️")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"削除エラー: {e}")
+
     h_list = db.get("history", [])
     if h_list:
         now_d = datetime.now(JST).date()
@@ -1174,11 +1236,11 @@ if not st.session_state.mode:
                 for h in items:
                     tid = h.get("ID")
                     with st.container(border=True):
-                        c_sel, c_info, c_go, c_sp, c_pq, c_pa, c_del = st.columns(
-                            [0.4, 2.6, 1.2, 1.0, 0.8, 0.8, 0.5]
+                        # 🌟 修正：c_del（個別ゴミ箱）を削除し、c_infoを拡大
+                        c_sel, c_info, c_go, c_sp, c_pq, c_pa = st.columns(
+                            [0.4, 3.1, 1.2, 1.0, 0.8, 0.8]
                         )
 
-                        # ID管理
                         is_checked = c_sel.checkbox(
                             "選択", key=f"sel_{tid}", label_visibility="collapsed"
                         )
@@ -1213,7 +1275,6 @@ if not st.session_state.mode:
                             st.session_state.mode = "training"
                             st.rerun()
 
-                        # 印刷・削除ボタン類 (省略せず全て記述)
                         if c_pq.button("📄 題", key=f"pq_{tid}", width="stretch"):
                             st.session_state.print_type, st.session_state.print_data = (
                                 "q",
@@ -1224,6 +1285,7 @@ if not st.session_state.mode:
                                 },
                             )
                             st.rerun()
+
                         if c_pa.button("🔑 答", key=f"pa_{tid}", width="stretch"):
                             if st.session_state.get("parent_unlock_key") == "7777":
                                 (
@@ -1240,9 +1302,6 @@ if not st.session_state.mode:
                                 st.rerun()
                             else:
                                 st.toast("キーが必要です", icon="🔒")
-                        if c_del.button("🗑️", key=f"del_{tid}", width="stretch"):
-                            st.session_state.delete_list.append(tid)
-                            st.toast("上部の一括削除ボタンを押してください")
 
                         # メモ保存
                         c_m1, c_m2, c_m3 = st.columns([3, 2, 1])
@@ -1267,12 +1326,14 @@ if not st.session_state.mode:
                                 st.error("保存失敗")
 
 # =============================================================================
-# 12. 特訓モード：筋肉質ハイブリッドエンジン (漢字表示固定・消しゴム復元版)
+# 12. 特訓モード：筋肉質ハイブリッドエンジン (1行集約・点滅ゼロ版)
 # =============================================================================
-
-else:  # --- 特訓モード ---
+else:  # --- 特訓モード：リカバリー・マッスル版（判定ゆるめ ＆ UI安定） ---
     idx, qs = st.session_state.index, st.session_state.questions
     if idx >= len(qs):
+        # =========================================================
+        # 🏁 MISSION COMPLETE 画面
+        # =========================================================
         st.balloons()
         st.title("MISSION COMPLETE!")
         sc = (
@@ -1281,225 +1342,351 @@ else:  # --- 特訓モード ---
             else 0
         )
         st.markdown(f"# 到達率: {sc}%")
-
         if st.session_state.is_cheating_flagged:
             st.error("⚠️ 警告：連続で極端に早いスキップが検知されました。")
-
         c_re, c_sv = st.columns(2)
-        if c_re.button("🔄 最初から解き直す", width="stretch"):
-            st.session_state.index = 0
-            st.session_state.correct_count = 0
-            st.session_state.show_result = False
-            st.session_state.show_options = False
-            st.session_state.current_opts = []
+        if c_re.button("🔄 最初から解き直す", use_container_width=True):
+            (
+                st.session_state.index,
+                st.session_state.correct_count,
+                st.session_state.show_result,
+            ) = 0, 0, False
+            st.session_state.show_options, st.session_state.current_opts = False, []
             st.rerun()
-
         if c_sv.button(
-            "💾 保存して本部へ戻る",
-            type="primary",
-            width="stretch",
-            disabled=st.session_state.is_saving,
+            "💾 保存して本部へ戻る", type="primary", use_container_width=True
         ):
-            st.session_state.is_saving = True
-            queue_sound("correct.mp3")
             batch_save_to_db()
             st.session_state.mode = None
             st.rerun()
+
     else:
-        # 🌟 現在の問題データを取得（NameError防止のため一元化）
-        cur = qs[idx]
-        cat_name = cur.get("orig_cat", "共通")
-        ans_clean = str(cur.get("a", "")).strip()
+        q = qs[idx]
+        cat = q.get("orig_cat", "")
+        is_kanji = "漢字" in cat
+        ans_raw = str(q["a"]).strip()
 
-        en_disp, jp_disp, choices_pool = parse_order_question(cur.get("q"), cat_name)
+        if is_kanji:
+            # -----------------------------------------------------
+            # 🈲 漢字専用：完全自力・安定レイアウト
+            # -----------------------------------------------------
+            chars = list(ans_raw)
+            if "kj_scores" not in st.session_state or st.session_state.get(
+                "kj_q_id"
+            ) != q.get("q"):
+                st.session_state.kj_scores = {i: 0 for i in range(len(chars))}
+                st.session_state.kj_q_id = q.get("q")
 
-        st.caption(
-            f"Mission {idx + 1}/{len(qs)} | ⭕️ {st.session_state.correct_count} | {cat_name}"
-        )
-        st.markdown(f"### {en_disp}")
-        if jp_disp:
-            st.markdown(f"#### {jp_disp}")
+            st.markdown("### 🛡️ 漢字特訓：一文字ずつ集中突破")
+            st.markdown(f"**問題 {idx + 1}: {q['q']}**")
 
-        # --- ヒント機能 ---
-        with st.expander("🔍 この問題のヒント（ヘルプ）"):
-            hint_text = cur.get("h", "")
-            if hint_text:
-                st.info(f"💡 {hint_text}")
-            else:
-                st.warning("ヒントが登録されていません。")
-
-        # --- ✏️ キャンバス・メモ機能 ---
-        with st.container(border=True):
-            m_col1, m_col2, m_col3 = st.columns([1.5, 2, 1])
-            tool = m_col1.radio(
-                "Tool",
-                ["🖋️", "🧽"],
-                horizontal=True,
-                label_visibility="collapsed",
-                key=f"tl_sel_{idx}",
-            )
-            canvas_page = m_col2.radio(
-                "Page",
-                ["P1", "P2"],
-                horizontal=True,
-                label_visibility="collapsed",
-                key=f"pg_sel_{idx}",
+            st.markdown(
+                """<style>button[title="Download"], button[title="Undo"], button[title="Redo"] { display: none !important; }</style>""",
+                unsafe_allow_html=True,
             )
 
-            if m_col3.button(
-                "🗑️", key=f"clr_{idx}_{canvas_page}", use_container_width=True
-            ):
-                reset_key = f"reset_{idx}_{canvas_page}"
-                st.session_state[reset_key] = st.session_state.get(reset_key, 0) + 1
+            cols = st.columns(len(chars))
+            for i, char in enumerate(chars):
+                with cols[i]:
+                    score_val = st.session_state.kj_scores[i]
+                    st.markdown(f"**{char} ({min(100, score_val)}%)**")
+
+                    with st.container(border=True):
+                        st.markdown(
+                            f"""
+                            <div style='text-align:center; background:#f8f9fb; padding:10px; border-radius:10px; margin-bottom:10px;'>
+                                <div style='font-size:85px; font-family:serif; color:#333; line-height:1;'>{char}</div>
+                                <div style='font-size:12px; color:#666; margin-top:5px;'>正解：{q.get(f"strokes{i + 1}", "??")}画 (±2)</div>
+                            </div>
+                        """,
+                            unsafe_allow_html=True,
+                        )
+
+                        st.progress(min(100, score_val) / 100)
+
+                        if score_val < 100:
+                            reset_key = st.session_state.get(f"reset_{idx}_{i}", 0)
+                            canvas_res = st_canvas(
+                                stroke_width=8,
+                                stroke_color="#000000",
+                                height=280,
+                                width=280,
+                                background_image=None,
+                                background_color="#ffffff",
+                                drawing_mode="freedraw",
+                                key=f"kj_cv_{idx}_{i}_{reset_key}",
+                                display_toolbar=False,
+                            )
+
+                            b1, b2 = st.columns(2)
+                            if b1.button(
+                                "📮 採点",
+                                key=f"score_{idx}_{i}",
+                                use_container_width=True,
+                            ):
+                                s_point = get_kanji_score(
+                                    canvas_res, char, q.get(f"strokes{i + 1}", 10)
+                                )
+                                current_s = st.session_state.kj_scores[i]
+
+                                if s_point > 0:
+                                    queue_sound("correct.mp3")
+                                    if s_point >= 85:
+                                        st.session_state.kj_scores[i] = 100
+                                    elif s_point >= 60:
+                                        st.session_state.kj_scores[i] = (
+                                            66 if current_s == 0 else 100
+                                        )
+                                    else:
+                                        if current_s == 0:
+                                            st.session_state.kj_scores[i] = 34
+                                        elif current_s == 34:
+                                            st.session_state.kj_scores[i] = 66
+                                        else:
+                                            st.session_state.kj_scores[i] = 100
+                                    st.session_state[f"reset_{idx}_{i}"] = reset_key + 1
+                                    st.rerun()
+                                elif s_point == 0:
+                                    queue_sound("wrong.mp3")
+                                    st.error("形が違うよ。中央に大きく書いてみよう！")
+                                elif s_point == -1:
+                                    st.warning("画数がちがうよ")
+
+                            if b2.button(
+                                "🖌️ クリア",
+                                key=f"clr_{idx}_{i}",
+                                use_container_width=True,
+                            ):
+                                st.session_state[f"reset_{idx}_{i}"] = reset_key + 1
+                                st.rerun()
+                        else:
+                            st.success("Mastered!")
+                            st.markdown(
+                                "<h1 style='text-align:center; font-size:100px;'>💮</h1>",
+                                unsafe_allow_html=True,
+                            )
+
+            st.divider()
+            c_skip, c_next = st.columns(2)
+            is_all_clear = all(s >= 100 for s in st.session_state.kj_scores.values())
+
+            if c_skip.button("この問題をスキップ ⏩", use_container_width=True):
+                st.session_state.index += 1
+                st.session_state.session_results.append(
+                    {"q": q["q"], "cat": cat, "correct": False}
+                )
                 st.rerun()
 
-            p_color, p_width = ("#000000", 5) if tool == "🖋️" else ("#f8f9fb", 35)
-            st_canvas(
-                stroke_width=p_width,
-                stroke_color=p_color,
-                height=400,
-                width=1100,
-                key=f"cv_main_{idx}_{canvas_page}_{st.session_state.get(f'reset_{idx}_{canvas_page}', 0)}",
-                background_color="#f8f9fb",
-                display_toolbar=False,
+            if c_next.button(
+                "次の問題へ ➡️",
+                use_container_width=True,
+                type="primary",
+                disabled=not is_all_clear,
+            ):
+                st.session_state.index += 1
+                st.session_state.correct_count += 1
+                st.session_state.session_results.append(
+                    {"q": q["q"], "cat": cat, "correct": True}
+                )
+                st.rerun()
+
+        else:
+            # 一般教科：yoshi黄金比適用 (-55px / 125px)
+            en_display, jp_display, choices_from_q = parse_order_question(q["q"], cat)
+            st.caption(
+                f"Mission {idx + 1}/{len(qs)} | ⭕️ {st.session_state.correct_count}"
+            )
+            st.markdown(f"### {en_display}")
+            if jp_display:
+                st.markdown(f"#### {jp_display}")
+
+            st.markdown(
+                r"""<style>
+                button[title="Download"], button[title="Undo"], button[title="Redo"] { display: none !important; }
+                .stCanvasToolbar { bottom: 10px !important; left: 10px !important; background: transparent !important; }
+                div[data-testid="stHorizontalBlock"]:has(div[class*="st-key-tl_"]) { margin-top: -55px !important; }
+                div[class*="st-key-tl_"] { margin-left: 125px !important; }
+                </style>""",
+                unsafe_allow_html=True,
             )
 
-        # --- 結果表示モード (SUCCESS/FAILURE) ---
-        if st.session_state.get("show_result", False):
-            if st.session_state.last_is_correct:
-                st.success(f"SUCCESS: {ans_clean}")
-                if st.button("次へ進む ➡️", width="stretch", type="primary"):
-                    st.session_state.index += 1
-                    st.session_state.show_result = False
-                    st.session_state.show_options = False
-                    st.session_state.current_opts = []
-                    st.rerun()
-            else:
-                st.error(f"FAILURE: {ans_clean}")
-                c_re, c_next = st.columns(2)
-                if c_re.button("🔄 もう一度解き直す", width="stretch"):
-                    st.session_state.show_result = False
-                    st.session_state.show_options = True  # 選択肢を再表示
-                    st.rerun()
-                if c_next.button("次へ進む ➡️", width="stretch"):
-                    st.session_state.index += 1
-                    st.session_state.show_result = False
-                    st.session_state.show_options = False
-                    st.rerun()
-
-        # --- 解答入力モード (並べ替え or 4択) ---
-        else:
-            # 1. 英語並べ替えUI
-            re_match = re.search(r"[\(（](.*?[/／].*?)[\)）]", str(cur.get("q")))
-            if re_match and "英語" in cat_name:
-                raw_words = [w.strip() for w in re.split(r"[/／]", re_match.group(1))]
-                if st.session_state.get("re_ans_idx") != idx:
-                    st.session_state.re_ans_list = []
-                    st.session_state.re_ans_idx = idx
-
-                st.markdown(
-                    f"**組み立て:** ` {' '.join(st.session_state.re_ans_list) if st.session_state.re_ans_list else '単語をタップしてね'} `"
+            with st.container(border=True):
+                canvas_h = 600 if "数学" in cat else 350
+                tool_now = st.session_state.get(f"tl_{idx}", "🖋️")
+                p_c, p_w = ("#000000", 5) if tool_now == "🖋️" else ("#f8f9fb", 35)
+                st_canvas(
+                    stroke_width=p_w,
+                    stroke_color=p_c,
+                    height=canvas_h,
+                    width=1100,
+                    key=f"cv_{idx}",
+                    background_color="#f8f9fb",
+                    display_toolbar=True,
                 )
 
-                # 単語チップの表示
-                chip_cols = st.columns(10)
-                from collections import Counter
-
-                u_cnt, t_cnt = Counter(st.session_state.re_ans_list), Counter(raw_words)
-                for c_idx, word in enumerate(raw_words):
-                    if u_cnt[word] < t_cnt[word]:
-                        if chip_cols[c_idx % 10].button(
-                            word, key=f"chip_{idx}_{c_idx}", use_container_width=True
-                        ):
-                            st.session_state.re_ans_list.append(word)
-                            st.rerun()
-
-                op1, op2, op3 = st.columns([1, 1, 2])
-                if op1.button("🔄 戻す", use_container_width=True):
-                    st.session_state.re_ans_list = []
-                    st.rerun()
-                if op2.button("⬅️ 消す", use_container_width=True):
-                    if st.session_state.re_ans_list:
-                        st.session_state.re_ans_list.pop()
-                        st.rerun()
-                if op3.button("✅ 判定", type="primary", use_container_width=True):
-                    user_sentence = " ".join(st.session_state.re_ans_list)
-                    is_ok = compare_answers(user_sentence, ans_clean)
-                    queue_sound("correct.mp3" if is_ok else "wrong.mp3")
-                    st.session_state.last_is_correct = is_ok
-                    if is_ok:
-                        st.session_state.correct_count += 1
-                    st.session_state.session_results.append(
-                        {"q": cur["q"], "cat": cat_name, "correct": is_ok}
+                c_tool, c_help = st.columns([1, 4])
+                with c_tool:
+                    st.radio(
+                        "T",
+                        ["🖋️", "🧽"],
+                        horizontal=True,
+                        label_visibility="collapsed",
+                        key=f"tl_{idx}",
                     )
-                    st.session_state.show_result = True  # 音を出し切るために結果画面へ
-                    st.rerun()
 
-            # 2. 4択自動生成UI
-            else:
-                if not st.session_state.get("show_options", False):
+            if st.session_state.show_result:
+                if st.session_state.last_is_correct:
+                    st.success(f"SUCCESS: {ans_raw}")
                     if st.button(
-                        "判定 ＆ オプション表示", type="primary", width="stretch"
+                        "次へ進む ➡️", use_container_width=True, type="primary"
                     ):
-                        st.session_state.show_options = True
+                        st.session_state.index += 1
+                        st.session_state.show_result = False
+                        st.session_state.show_options, st.session_state.current_opts = (
+                            False,
+                            [],
+                        )
                         st.rerun()
                 else:
-                    if (
-                        "current_opts" not in st.session_state
-                        or st.session_state.get("opt_q_key") != idx
-                    ):
-                        opts = [ans_clean]
-                        dummy_dat = str(cur.get("dummy", "")).strip()
-                        if dummy_dat:
+                    st.error(f"FAILURE: {ans_raw}")
+                    c_re, c_next_gen = st.columns(2)
+                    if c_re.button("🔄 解き直す", use_container_width=True):
+                        (
+                            st.session_state.show_result,
+                            st.session_state.show_options,
+                            st.session_state.current_opts,
+                        ) = False, True, []
+                        st.rerun()
+                    if c_next_gen.button("次へ進む ➡️", use_container_width=True):
+                        st.session_state.index += 1
+                        st.session_state.show_result, st.session_state.show_options = (
+                            False,
+                            False,
+                        )
+                        st.rerun()
+
+            elif st.session_state.show_options:
+                is_order = (
+                    "英語" in cat
+                    and (len(choices_from_q) > 0 or "/" in ans_raw or (" " in ans_raw))
+                ) or ("/" in ans_raw)
+                if is_order:
+                    if not st.session_state.current_opts:
+
+                        def get_parts(ans, choices):
+                            ans_cl = ans.replace("(", "").replace(")", "").rstrip(".")
+                            if "/" in ans_cl:
+                                return [
+                                    w.strip() for w in ans_cl.split("/") if w.strip()
+                                ]
+                            temp_words = ans_cl.split()
+                            parts = []
+                            i = 0
+                            sorted_choices = sorted(choices, key=len, reverse=True)
+                            while i < len(temp_words):
+                                found = False
+                                for c in sorted_choices:
+                                    cw = c.split()
+                                    if (
+                                        len(cw) > 1
+                                        and temp_words[i : i + len(cw)] == cw
+                                    ):
+                                        parts.append(" ".join(cw))
+                                        i += len(cw)
+                                        found = True
+                                        break
+                                if not found:
+                                    parts.append(temp_words[i])
+                                    i += 1
+                            return parts
+
+                        c_w = get_parts(ans_raw, choices_from_q)
+                        st.session_state.current_opts = (
+                            choices_from_q if choices_from_q else c_w.copy()
+                        )
+                        random.shuffle(st.session_state.current_opts)
+                        (
+                            st.session_state["user_ans_order"],
+                            st.session_state["correct_cache"],
+                        ) = [], c_w
+
+                    st.info(f"Answer: {' '.join(st.session_state['user_ans_order'])}")
+                    cols_w = st.columns(len(st.session_state.current_opts))
+                    for i, w in enumerate(st.session_state.current_opts):
+                        if st.session_state["user_ans_order"].count(w) < (
+                            st.session_state["correct_cache"].count(w)
+                            if w in st.session_state["correct_cache"]
+                            else 1
+                        ):
+                            if cols_w[i].button(
+                                w, key=f"wbtn_{idx}_{i}", use_container_width=True
+                            ):
+                                st.session_state["user_ans_order"].append(w)
+                                if len(st.session_state["user_ans_order"]) == len(
+                                    st.session_state["correct_cache"]
+                                ):
+                                    ok = [
+                                        x.lower()
+                                        for x in st.session_state["user_ans_order"]
+                                    ] == [
+                                        x.lower()
+                                        for x in st.session_state["correct_cache"]
+                                    ]
+                                    queue_sound("correct.mp3" if ok else "wrong.mp3")
+                                    st.session_state.last_is_correct = ok
+                                    if ok:
+                                        st.session_state.correct_count += 1
+                                    st.session_state.session_results.append(
+                                        {"q": q["q"], "cat": cat, "correct": ok}
+                                    )
+                                    st.session_state.show_result = True
+                                st.rerun()
+                    if st.button("⬅️ 戻す", use_container_width=True):
+                        st.session_state["user_ans_order"].pop()
+                        st.rerun()
+                else:
+                    if not st.session_state.current_opts:
+                        opts = [ans_raw]
+                        d_val = str(q.get("dummy", "")).strip()
+                        if d_val:
                             opts.extend(
                                 [
                                     x.strip()
-                                    for x in re.split(r"[,/、]", dummy_dat)
+                                    for x in re.split(r"[,/、]", d_val)
                                     if x.strip()
                                 ]
                             )
-                        opts = list(dict.fromkeys(opts))
-                        while len(opts) < 4:
-                            opts.append(f"ダミー選択肢{len(opts)}")
+                        if len(opts) < 4:
+                            c_cands = [
+                                str(x["a"])
+                                for x in all_q.get(cat, [])
+                                if str(x["a"]) != ans_raw
+                            ]
+                            random.shuffle(c_cands)
+                            opts.extend(c_cands)
+                        opts = list(dict.fromkeys(opts))[:4]
                         random.shuffle(opts)
-                        st.session_state.current_opts = opts[:4]
-                        st.session_state.opt_q_key = idx
-
-                    # ボタン表示
+                        st.session_state.current_opts = opts
                     o_cols = st.columns(len(st.session_state.current_opts))
-                    for o_idx, o_val in enumerate(st.session_state.current_opts):
-                        if o_cols[o_idx].button(
-                            str(o_val), key=f"opt_{idx}_{o_idx}", width="stretch"
+                    for i, o in enumerate(st.session_state.current_opts):
+                        if o_cols[i].button(
+                            str(o), key=f"opt_{idx}_{i}", use_container_width=True
                         ):
-                            # 今の問題データを取得
-                            cur = st.session_state.questions[st.session_state.index]
-                            ans_raw_val = str(cur["a"]).strip()
-
-                            # 🌟 判定結果を 'is_correct' に入れる
-                            is_correct = (
-                                str(o_val).strip().lower() == ans_raw_val.lower()
-                            )
-
-                            # 🌟 【最重要】スプレッドシート用のリストに「is_correct」を確実に渡す
-                            st.session_state.session_results.append(
-                                {
-                                    "q": cur["q"],
-                                    "cat": cur["orig_cat"],
-                                    "correct": is_correct,  # ここが 1 か 0 を決めます
-                                }
-                            )
-
-                            # 音の予約
-                            queue_sound("correct.mp3" if is_correct else "wrong.mp3")
-
-                            st.session_state.last_is_correct = is_correct
-                            if is_correct:
+                            ok = str(o).lower() == ans_raw.lower()
+                            queue_sound("correct.mp3" if ok else "wrong.mp3")
+                            st.session_state.last_is_correct = ok
+                            if ok:
                                 st.session_state.correct_count += 1
-                                st.session_state.show_result = True
-                            else:
-                                st.error("ざんねん！ちがうよ")
-
+                            st.session_state.session_results.append(
+                                {"q": q["q"], "cat": cat, "correct": ok}
+                            )
+                            st.session_state.show_result = True
                             st.rerun()
+            else:
+                if st.button(
+                    "判定 ＆ オプション表示", use_container_width=True, type="primary"
+                ):
+                    st.session_state.show_options = True
+                    st.rerun()
 
-# 🌟 全てのUI処理の最後に「予約された音」を実行
-execute_queued_sound()
+    execute_queued_sound()
