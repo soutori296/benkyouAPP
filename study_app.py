@@ -529,6 +529,7 @@ def load_db():
                 "rank": rank_val,
                 "orig_cat": cat,
                 "dummy": str(r.get("dummy", "")),
+                "unit": str(r.get("unit", r.get("sub_category", ""))),
             }
 
             for i in range(1, 11):
@@ -865,50 +866,75 @@ if not st.session_state.mode:
                     try:
                         gc_ad = gspread.authorize(get_creds())
                         sh_m_ad = gc_ad.open("study_stats_db").worksheet("mastery")
+                        m_all = sh_m_ad.get_all_values()
+                        m_headers = m_all[0]
+                        m_q_idx = m_headers.index("q")
 
-                        mastery_rows = sh_m_ad.get_all_records()
-                        headers = sh_m_ad.row_values(1)
-
-                        # 🌟 診断: ans列が何番目にあるか確認
-                        if "ans" in headers:
-                            ans_col_idx = headers.index("ans")
-                            st.info(
-                                f"診断: 'ans'列を {ans_col_idx + 1} 列目に発見しました。"
-                            )
-                        else:
-                            st.error(
-                                f"診断エラー: Masteryシートの1行目に 'ans' という列名が見当たりません。現在の列名: {headers}"
-                            )
-                            st.stop()
-
-                        updated_full_data = []
-                        # questions側の正解列名 'a' を指定
-                        flat_q_dict = {
-                            str(q.get("q", "")): q
-                            for q_list in all_q.values()
-                            for q in q_list
+                        # 既存データのマップ
+                        mastery_map = {
+                            r[m_q_idx].strip(): r for r in m_all[1:] if len(r) > m_q_idx
                         }
 
-                        update_count = 0
-                        for row in mastery_rows:
-                            q_txt = str(row.get("q", ""))
-                            if q_txt in flat_q_dict:
-                                # questionsの 'a' 列から取得
-                                correct_ans = str(flat_q_dict[q_txt].get("a", ""))
-                                row["ans"] = correct_ans
-                                update_count += 1
-                            updated_full_data.append([row.get(h, "") for h in headers])
+                        sh_q_current = gc_ad.open("study_stats_db").worksheet(
+                            "questions"
+                        )
+                        q_all = sh_q_current.get_all_values()
+                        q_headers = q_all[0]
 
-                        if updated_full_data:
-                            # アルファベットの列名を動的に計算 (G列なら 'G')
-                            last_col_letter = chr(64 + len(headers))
+                        # インデックスの特定
+                        q_q_idx = q_headers.index("q") if "q" in q_headers else 1
+                        q_a_idx = q_headers.index("a") if "a" in q_headers else 5
+                        q_cat_idx = 0
+                        # ⭐ QuestionsのB列(インデックス1)を中分類とする
+                        q_unit_idx = 1
+
+                        new_mastery_list = []
+                        update_count = 0
+
+                        for q_row in q_all[1:]:
+                            if len(q_row) <= max(q_q_idx, q_a_idx):
+                                continue
+
+                            q_text = q_row[q_q_idx].strip()
+                            q_ans = q_row[q_a_idx].strip()
+                            q_cat = q_row[q_cat_idx].strip()
+                            # ⭐ QuestionsのB列から中分類を取得
+                            q_unit = (
+                                q_row[q_unit_idx].strip()
+                                if len(q_row) > q_unit_idx
+                                else ""
+                            )
+
+                            if q_text in mastery_map:
+                                row = mastery_map[q_text]
+
+                                # ⭐ リストを無理やり7列（インデックス6）まで拡張する
+                                while len(row) < 7:
+                                    row.append("")
+
+                                # 解答(5)と中分類(6)を同期
+                                row[5] = q_ans
+                                row[6] = q_unit  # これがG列になります
+                                row[0] = q_cat
+                                new_mastery_list.append(row)
+                            else:
+                                # 新規：[cat, q, score, miss, date, ans, unit]
+                                new_row = [q_cat, q_text, "0", "0", "", q_ans, q_unit]
+                                new_mastery_list.append(new_row)
+
+                        # --- 書き込み（G列まで拡大） ---
+                        if new_mastery_list:
+                            # ⭐ A2 から G列 までの範囲を対象にする
+                            last_row_old = len(m_all) + 100
+                            sh_m_ad.batch_clear([f"A2:G{last_row_old}"])
+
                             sh_m_ad.update(
-                                f"A2:{last_col_letter}{len(updated_full_data) + 1}",
-                                updated_full_data,
+                                range_name=f"A2:G{len(new_mastery_list) + 1}",
+                                values=new_mastery_list,
                             )
 
                         st.success(
-                            f"同期成功！ {update_count}件の正解データをF列に流し込みました。"
+                            f"✨ 同期成功！ G列（中分類）を含めて {len(new_mastery_list)} 件を更新しました。"
                         )
 
                     except Exception as e:
@@ -1171,6 +1197,78 @@ if not st.session_state.mode:
                     st.success("対象の未習得問題はありません！")
 
     st.divider()
+
+    # --- 🔍 自由検索・カスタムミッション（AND/ORハイブリッド版） ---
+    with st.expander("🔍 検索カスタム抽出ミッション", expanded=False):
+        # 1. 入力を受け取る（全角・半角スペース、カンマに対応）
+        search_raw = st.text_input(
+            "キーワード検索",
+            placeholder="例: 「2年 プレスタ 古文」(AND) / 「漢字, 語句」(OR)",
+            key="custom_search_input",
+        )
+
+        if search_raw:
+            # 1. カンマでOR分割、さらにスペースでAND分割
+            or_groups = [g.strip() for g in re.split(r"[,、]", search_raw) if g.strip()]
+
+            found_pool = []
+            for cat_name, q_list in all_q.items():
+                for q_item in q_list:
+                    # 🌟 A列(大) + B列(問) + G列(中) をすべて結合（小文字化して検索しやすく）
+                    q_val = str(q_item.get("q", ""))
+                    u_val = str(q_item.get("unit", ""))
+                    target_text = (cat_name + q_val + u_val).lower()
+
+                    match_found = False
+                    for group in or_groups:
+                        # 2. 【強化ポイント】全角・半角スペースをすべて分割し、空文字を除去
+                        and_keywords = [
+                            k.strip().lower()
+                            for k in re.split(r"[\s　]+", group)
+                            if k.strip()
+                        ]
+
+                        # 3. あいまいAND判定：すべてのキーワードが「どこか」に含まれているか
+                        if and_keywords and all(
+                            kw in target_text for kw in and_keywords
+                        ):
+                            match_found = True
+                            break
+
+                    if match_found:
+                        found_pool.append(q_item)
+
+            # --- 結果の表示と起動 ---
+            hit_count = len(found_pool)
+            if hit_count > 0:
+                # ⭐ 30問を上限にするセーフティ
+                max_display = 30
+                num_to_draw = min(hit_count, max_display)
+
+                st.metric("ヒット件数", f"{hit_count} 件")
+                st.info(
+                    f"💡 {hit_count}件の中から、ランダムに **{num_to_draw}問** を選んで出題します。"
+                )
+
+                if st.button(
+                    f"{num_to_draw}問でミッションを開始！",
+                    type="primary",
+                    width="stretch",
+                    key="start_and_or_mission",
+                ):
+                    # ランダム抽出
+                    selection = random.sample(found_pool, num_to_draw)
+
+                    # モード名に検索ワードを反映
+                    mode_label = f"検索:{search_raw[:10]}"
+                    batch_save_to_db(custom_mode=mode_label, custom_qs=selection)
+                    st.rerun()
+            else:
+                st.warning(
+                    "一致する問題がありません。キーワードを減らすか、別の言葉を試してください。"
+                )
+        else:
+            st.write("キーワードを入れてください（スペースで絞り込み、カンマで追加）")
 
     # =============================================================================
     # 11. メイン画面：本部（一括削除バー ＆ ゴミ箱撤廃版）
