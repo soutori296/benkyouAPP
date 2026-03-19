@@ -20,6 +20,7 @@ from PIL import Image, ImageDraw, ImageFont
 def queue_sound(file_path):
     st.session_state["sound_queue"] = file_path
 
+
 # 💡 予約された音を「実際に再生」する関数
 def execute_queued_sound():
     if "sound_queue" in st.session_state and st.session_state["sound_queue"]:
@@ -595,7 +596,7 @@ def load_db():
                 {
                     "カテゴリ": cat,
                     "開拓状況": f"{done} / {total_in_db}",
-                    "到達率": f"{rate}%",
+                    "開拓率": f"{rate}%",
                 }
             )
             total_opened_count += done
@@ -714,7 +715,7 @@ with st.sidebar:
         c2.metric("⌚ 本日分", format_time(st.session_state.daily_seconds))
 
         c3, c4 = st.columns(2, gap="small")
-        c3.metric("🎯 到達率", f"{db.get('overall_avg', 0.0)}%")
+        c3.metric("🚩 開拓率", f"{db.get('overall_avg', 0.0)}%")
 
         # 総解答数（開拓済み問題の総和）
         total_ans = sum(
