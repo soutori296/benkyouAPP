@@ -20,37 +20,20 @@ from PIL import Image, ImageDraw, ImageFont
 def queue_sound(file_path):
     st.session_state["sound_queue"] = file_path
 
-
 # 💡 予約された音を「実際に再生」する関数
 def execute_queued_sound():
     if "sound_queue" in st.session_state and st.session_state["sound_queue"]:
         sound_file = st.session_state["sound_queue"]
-        # 💡 スマホ対応：JSで明示的にplay()を呼び出し、失敗した場合は次のタップで鳴らす
+        # HTMLを使って音を再生（ブラウザの自動再生制限を回避しやすい方法）
         st.components.v1.html(
             f"""
-            <script>
-                var audio = new Audio("{sound_file}");
-                audio.playsInline = true; // iOS対策
-                
-                // 再生を試みる
-                var playPromise = audio.play();
-
-                if (playPromise !== undefined) {{
-                    playPromise.catch(error => {{
-                        console.log("Autoplay blocked. Waiting for user interaction...");
-                        // ブロックされた場合、画面のどこかを触った瞬間に鳴るように予約する
-                        document.addEventListener('touchstart', function() {{
-                            audio.play();
-                        }}, {{ once: true }});
-                        document.addEventListener('click', function() {{
-                            audio.play();
-                        }}, {{ once: true }});
-                    }});
-                }}
-            </script>
+            <audio autoplay>
+                <source src="{sound_file}" type="audio/mp3">
+            </audio>
             """,
             height=0,
         )
+        # 再生が終わったら予約を消す
         st.session_state["sound_queue"] = None
 
 
