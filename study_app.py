@@ -15,6 +15,29 @@ import streamlit.components.v1 as components
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
+
+# 💡 音を出すための「予約」をする関数
+def queue_sound(file_path):
+    st.session_state["sound_queue"] = file_path
+
+
+# 💡 予約された音を「実際に再生」する関数
+def execute_queued_sound():
+    if "sound_queue" in st.session_state and st.session_state["sound_queue"]:
+        sound_file = st.session_state["sound_queue"]
+        # HTMLを使って音を再生（ブラウザの自動再生制限を回避しやすい方法）
+        st.components.v1.html(
+            f"""
+            <audio autoplay>
+                <source src="{sound_file}" type="audio/mp3">
+            </audio>
+            """,
+            height=0,
+        )
+        # 再生が終わったら予約を消す
+        st.session_state["sound_queue"] = None
+
+
 # =============================================================================
 # 1. 定数・グローバル設定
 # =============================================================================
@@ -1355,22 +1378,52 @@ if not st.session_state.mode:
                         )
 
                         if c_go.button(
-                            "🔄 特訓", key=f"go_{tid}", type="primary", width="stretch"
+                            "🔄 特訓",
+                            key=f"go_{tid}",
+                            type="primary",
+                            use_container_width=True,
                         ):
+                            # 🔥 【完全リセット】古いミッションの残骸をすべてゴミ箱に捨てる
+                            keys_to_delete = [
+                                "questions",
+                                "index",
+                                "correct_count",
+                                "show_result",
+                                "kj_scores",
+                                "user_answers",
+                                "session_results",
+                                "correct_cache",
+                                "show_options",
+                            ]
+                            for k in keys_to_delete:
+                                if k in st.session_state:
+                                    del st.session_state[k]
+
+                            # 🚩 初期状態のセット（シャッターを閉め、空の箱を作る）
+                            st.session_state.show_options = False
+                            st.session_state.correct_cache = []
+                            st.session_state.index = 0
+                            st.session_state.correct_count = 0
+
+                            # データの読み込み
                             skip_indices = get_skip_indices(str(h.get("除外", "")))
                             q_json = json.loads(h.get("問題リスト(JSON)", "[]"))
                             base_qs = [
                                 next((q for q in flat_pool if q["q"] == t), None)
                                 for t in q_json
                             ]
+
                             st.session_state.questions = [
                                 q
                                 for i, q in enumerate(base_qs[:30])
                                 if q and (i + 1) not in skip_indices
                             ]
+
+                            # 保存されていた進捗を復元
                             st.session_state.index = int(h.get("進捗", 0))
                             st.session_state.active_mission_id = tid
                             st.session_state.mode = "training"
+
                             st.rerun()
 
                         if c_pq.button("📄 題", key=f"pq_{tid}", width="stretch"):
@@ -1471,8 +1524,14 @@ else:  # --- 特訓モード：音質復旧 ＆ 遷移リセット徹底 ＆ Ruf
 
         if is_kanji:
             # -----------------------------------------------------
-            # 🈲 漢字専用レイアウト
+            # 🈲 漢字専用レイアウト（サイドバー保護版）
             # -----------------------------------------------------
+            st.markdown(
+                r"""<style>
+                [data-testid="stMain"] .block-container { padding-top: 5.0rem !important; } 
+                </style>""",
+                unsafe_allow_html=True,
+            )
             chars = list(ans_raw)
             if "kj_scores" not in st.session_state or st.session_state.get(
                 "kj_q_id"
@@ -1480,29 +1539,41 @@ else:  # --- 特訓モード：音質復旧 ＆ 遷移リセット徹底 ＆ Ruf
                 st.session_state.kj_scores = {i: 0 for i in range(len(chars))}
                 st.session_state.kj_q_id = q.get("q")
 
-            st.markdown(f"### 🛡️ 漢字特訓 | 問題 {idx + 1}")
-            st.markdown(f"**{q['q']}**")
+            # 1. Mission表示
+            st.caption(
+                f"Mission {idx + 1}/{len(qs)} | ⭕️ {st.session_state.correct_count}"
+            )
+
+            # 2. 問題文
             st.markdown(
-                """<style>button[title="Download"], button[title="Undo"], button[title="Redo"] { display: none !important; }</style>""",
+                f"<div style='text-align:center; font-size:22px; font-weight:bold; margin-bottom:10px;'>🛡️ 漢字特訓：{q['q']}</div>",
                 unsafe_allow_html=True,
             )
 
+            # 3. 漢字入力エリア
             cols = st.columns(len(chars))
             for i, char in enumerate(chars):
                 with cols[i]:
                     score_val = st.session_state.kj_scores[i]
-                    st.markdown(f"**{char} ({min(100, score_val)}%)**")
+                    st.markdown(
+                        f"<div style='text-align:center; font-weight:bold;'>{char} ({min(100, score_val)}%)</div>",
+                        unsafe_allow_html=True,
+                    )
+
                     with st.container(border=True):
+                        # お手本エリア
                         st.markdown(
                             f"""
-                            <div style='text-align:center; background:#f8f9fb; padding:10px; border-radius:10px; margin-bottom:10px;'>
-                                <div style='font-size:85px; font-family:serif; color:#333; line-height:1;'>{char}</div>
-                                <div style='font-size:12px; color:#666; margin-top:5px;'>正解：{q.get(f"strokes{i + 1}", "??")}画</div>
+                            <div style='text-align:center; background:#f8f9fb; padding:5px; border-radius:10px 10px 0 0; margin-bottom:0px; border-bottom:1px solid #ddd;'>
+                                <div style='font-size:80px; font-family:serif; color:#333; line-height:1;'>{char}</div>
+                                <div style='font-size:11px; color:#666; margin-top:2px;'>正解：{q.get(f"strokes{i + 1}", "??")}画</div>
                             </div>
-                        """,
+                            """,
                             unsafe_allow_html=True,
                         )
+
                         st.progress(min(100, score_val) / 100)
+
                         if score_val < 100:
                             r_key = st.session_state.get(f"reset_{idx}_{i}", 0)
                             cv_res = st_canvas(
@@ -1513,6 +1584,9 @@ else:  # --- 特訓モード：音質復旧 ＆ 遷移リセット徹底 ＆ Ruf
                                 key=f"kj_cv_{idx}_{i}_{r_key}",
                                 display_toolbar=False,
                             )
+                            # ...（以下、ボタン処理などは維持）
+
+                            # 採点・クリアボタン
                             b1, b2 = st.columns(2)
                             if b1.button(
                                 "📮 採点",
@@ -1548,22 +1622,34 @@ else:  # --- 特訓モード：音質復旧 ＆ 遷移リセット徹底 ＆ Ruf
                                     queue_sound("wrong.mp3")
                                     st.error("形が違うよ")
                             if b2.button(
-                                "🖌️", key=f"clr_{idx}_{i}", use_container_width=True
+                                "🧽消去",
+                                key=f"clr_{idx}_{i}",
+                                use_container_width=True,
                             ):
                                 st.session_state[f"reset_{idx}_{i}"] = r_key + 1
                                 st.rerun()
                         else:
                             st.success("Mastered!")
 
-            st.divider()
             c_skp_kj, c_nxt_kj = st.columns(2)
             is_all = all(s >= 100 for s in st.session_state.kj_scores.values())
+
+            # --- スキップボタン ---
             if c_skp_kj.button("問題をスキップ ⏩", use_container_width=True):
                 st.session_state.index += 1
                 st.session_state.session_results.append(
                     {"q": q["q"], "cat": cat, "correct": False}
                 )
+
+                # 🚩 【重要】次の問題のためにシャッターを閉め、データを掃除する
+                st.session_state.show_options = False
+                st.session_state.correct_cache = []
+                st.session_state.kj_scores = {}  # 漢字の点数もリセット
+                st.session_state.show_result = False
+
                 st.rerun()
+
+            # --- 次の問題へボタン ---
             if c_nxt_kj.button(
                 "次の問題へ ➡️",
                 use_container_width=True,
@@ -1575,48 +1661,77 @@ else:  # --- 特訓モード：音質復旧 ＆ 遷移リセット徹底 ＆ Ruf
                 st.session_state.session_results.append(
                     {"q": q["q"], "cat": cat, "correct": True}
                 )
+
+                # 🚩 【重要】ここでも掃除を徹底する
+                st.session_state.show_options = False
+                st.session_state.correct_cache = []
+                st.session_state.kj_scores = {}
+                st.session_state.show_result = False
+
                 st.rerun()
 
         else:
             # -----------------------------------------------------
             # 📝 一般教科 ＆ 並べ替え
             # -----------------------------------------------------
+            # 🚩 1. 現在の問題データを取得（常に最新の index に基づく）
+            q = qs[idx]
+            ans_raw = str(q.get("a", "")).strip()
+            cat = q.get("orig_cat", "共通")
+
+            # レイアウトCSS
+            st.markdown(
+                r"""<style>
+                [data-testid="stMain"] .block-container { padding-top: 5.0rem !important; } 
+                [data-testid="stMain"] [data-testid="stVerticalBlock"] > div { margin-top: -4px !important; } 
+                </style>""",
+                unsafe_allow_html=True,
+            )
+
+            # 並べ替えかどうかの判定（その場で行う）
             en_disp, jp_disp, choices_q = parse_order_question(q["q"], cat)
             is_order = (
                 "英語" in cat
                 and (len(choices_q) > 0 or "/" in ans_raw or " " in ans_raw)
             ) or ("/" in ans_raw)
 
-            # 並べ替えラベル表示
-            if is_order and not st.session_state.show_result:
-                st.session_state.show_options = True
-                st.info("🧩 **並べ替え問題**：下の単語を正しい順に選んでください")
-
+            # 1. Mission表示
             st.caption(
                 f"Mission {idx + 1}/{len(qs)} | ⭕️ {st.session_state.correct_count}"
             )
-            st.markdown(f"### {en_disp}")
-            if jp_disp:
-                st.markdown(f"#### {jp_disp}")
 
-            hint_t = q.get("hint", "")
-            if hint_t:
-                st.info(f"💡 **ヒント**: {hint_t}")
-            with st.expander("📖 答えを確認する（見ながら解く・解き直し用）"):
-                st.write(f"正解: **{ans_raw}**")
-
+            # 2. 問題文
             st.markdown(
-                r"""<style>
-                button[title="Download"], button[title="Undo"], button[title="Redo"] { display: none !important; }
-                .stCanvasToolbar { bottom: 10px !important; left: 10px !important; background: transparent !important; }
-                div[data-testid="stHorizontalBlock"]:has(div[class*="st-key-tl_"]) { margin-top: -55px !important; }
-                div[class*="st-key-tl_"] { margin-left: 125px !important; }
-                </style>""",
+                f"<div style='font-size: 24px; font-weight: bold; margin: 5px 0 5px 0;'>{en_disp}</div>",
+                unsafe_allow_html=True,
+            )
+            if jp_disp:
+                st.markdown(
+                    f"<div style='font-size: 18px; color: #555; margin: 0 0 10px 0;'>{jp_disp}</div>",
+                    unsafe_allow_html=True,
+                )
+
+            # 💡 3. ヒント表示エリア
+            hint_t = q.get("h", "")
+            if hint_t and str(hint_t).strip():
+                h_col1, h_col2 = st.columns([1, 10])
+                with h_col1:
+                    show_hint = st.toggle("💡", value=False, key=f"hint_toggle_{idx}")
+                with h_col2:
+                    if show_hint:
+                        st.markdown(
+                            f"""<div style="background-color: #e7f4f9; color: #0c5460; border-left: 4px solid #007bff; padding: 8px 12px; border-radius: 4px; font-size: 14px; line-height: 1.4; margin-top: 5px;">{hint_t}</div>""",
+                            unsafe_allow_html=True,
+                        )
+
+            # 隙間
+            st.markdown(
+                "<div style='display: block; height: 20px;'></div>",
                 unsafe_allow_html=True,
             )
 
+            # 4. キャンバスエリア（常に表示）
             with st.container(border=True):
-                # 高さ：並べ替え200 / 数学450 / その他350
                 canvas_h = 200 if is_order else (450 if "数学" in cat else 350)
                 tool_now = st.session_state.get(f"tl_{idx}", "🖋️")
                 p_c, p_w = ("#000000", 5) if tool_now == "🖋️" else ("#f8f9fb", 35)
@@ -1639,8 +1754,11 @@ else:  # --- 特訓モード：音質復旧 ＆ 遷移リセット徹底 ＆ Ruf
                         key=f"tl_{idx}",
                     )
 
-            # --- 結果表示フェーズ ---
+            # -----------------------------------------------------
+            # 🚩 5. 判定 ＆ オプション表示フェーズ（ここがバグの急所）
+            # -----------------------------------------------------
             if st.session_state.show_result:
+                # 結果表示
                 if st.session_state.last_is_correct:
                     st.success(f"SUCCESS: {ans_raw}")
                 else:
@@ -1655,6 +1773,7 @@ else:  # --- 特訓モード：音質復旧 ＆ 遷移リセット徹底 ＆ Ruf
                     st.session_state.show_result = False
                     st.session_state.show_options = True
                     st.session_state["user_ans_order"] = []
+                    # 💡 解き直しの時も選択肢をリセット
                     st.session_state.current_opts = []
                     st.rerun()
                 if c_next.button(
@@ -1666,63 +1785,40 @@ else:  # --- 特訓モード：音質復旧 ＆ 遷移リセット徹底 ＆ Ruf
                     st.session_state.index += 1
                     st.session_state.show_result = False
                     st.session_state.show_options = False
+                    # 💡 次の問題のために全てのキャッシュを空にする
                     st.session_state.current_opts = []
                     st.session_state["user_ans_order"] = []
+                    st.session_state["correct_cache"] = []
                     st.rerun()
 
-            elif st.session_state.show_options:
+            elif st.session_state.get("show_options"):
+                # 🌟 オプション表示中（英語の選択肢などがここに出る）
                 if is_order:
+                    # --- 並べ替え問題のロジック ---
                     if "user_ans_order" not in st.session_state:
                         st.session_state["user_ans_order"] = []
 
-                    if not st.session_state.current_opts:
+                    # 🚩 ここで現在の問題の正解を作る（英語が国語に混ざらないように上書き）
+                    ans_parts = [w.strip() for w in ans_raw.split("/") if w.strip()]
+                    st.session_state["correct_cache"] = ans_parts
 
-                        def get_safe_parts(ans, choices):
-                            ans_cl = ans.strip()
-                            if choices:
-                                ordered = []
-                                sorted_ch = sorted(
-                                    [c.strip() for c in choices], key=len, reverse=True
-                                )
-                                cursor = 0
-                                while cursor < len(ans_cl):
-                                    if ans_cl[cursor] == " ":
-                                        cursor += 1
-                                        continue
-                                    match = False
-                                    for ch in sorted_ch:
-                                        if ans_cl.lower()[cursor:].startswith(
-                                            ch.lower()
-                                        ):
-                                            ordered.append(
-                                                ans_cl[cursor : cursor + len(ch)]
-                                            )
-                                            cursor += len(ch)
-                                            match = True
-                                            break
-                                    if not match:
-                                        ordered.append(ans_cl[cursor])
-                                        cursor += 1
-                                return ordered
-                            return re.findall(r"[\w']+|[.,!?;]", ans_cl)
-
-                        c_w = get_safe_parts(ans_raw, choices_q)
+                    if not st.session_state.get("current_opts"):
+                        # パーツがなければ作る
                         st.session_state.current_opts = (
-                            choices_q if choices_q else c_w.copy()
+                            choices_q if choices_q else ans_parts.copy()
                         )
                         random.shuffle(st.session_state.current_opts)
-                        st.session_state["correct_cache"] = c_w
 
                     st.info(
                         f"Answer: {' '.join(st.session_state.get('user_ans_order', []))}"
                     )
 
-                    MAX_COLS = 8
+                    # 選択肢ボタンの表示
                     opts = st.session_state.current_opts
+                    MAX_COLS = 8
                     for i in range(0, len(opts), MAX_COLS):
-                        chunk = opts[i : i + MAX_COLS]
                         cols = st.columns(MAX_COLS)
-                        for j, word in enumerate(chunk):
+                        for j, word in enumerate(opts[i : i + MAX_COLS]):
                             idx_o = i + j
                             needed = st.session_state["correct_cache"].count(word)
                             user_h = st.session_state["user_ans_order"].count(word)
@@ -1735,7 +1831,6 @@ else:  # --- 特訓モード：音質復旧 ＆ 遷移リセット徹底 ＆ Ruf
                                     st.session_state["user_ans_order"].append(word)
                                     st.rerun()
 
-                    # カラム定義
                     c_judge, c_undo, c_skip = st.columns([2, 1, 1])
                     if len(st.session_state["user_ans_order"]) >= len(
                         st.session_state["correct_cache"]
@@ -1779,8 +1874,10 @@ else:  # --- 特訓モード：音質復旧 ＆ 遷移リセット徹底 ＆ Ruf
                         st.session_state.current_opts = []
                         st.session_state["user_ans_order"] = []
                         st.rerun()
+
                 else:
-                    if not st.session_state.current_opts:
+                    # --- 通常の4択問題 ---
+                    if not st.session_state.get("current_opts"):
                         opts = [ans_raw]
                         d_v = str(q.get("dummy", "")).strip()
                         if d_v:
@@ -1818,11 +1915,16 @@ else:  # --- 特訓モード：音質復旧 ＆ 遷移リセット徹底 ＆ Ruf
                             )
                             st.session_state.show_result = True
                             st.rerun()
+
             else:
+                # 🚩 【マスク：ここがスタート】
                 c_jd_gen, c_sk_gen = st.columns(2)
+                # 💡 このボタンを押した瞬間に、今の問題（index）に合わせて選択肢を生成するよう強制します
                 if c_jd_gen.button(
                     "判定 ＆ オプション表示", use_container_width=True, type="primary"
                 ):
+                    st.session_state.current_opts = []  # 前の残骸を消す
+                    st.session_state["user_ans_order"] = []
                     st.session_state.show_options = True
                     st.rerun()
                 if c_sk_gen.button("この問題をスキップ ⏩", use_container_width=True):
@@ -1830,5 +1932,4 @@ else:  # --- 特訓モード：音質復旧 ＆ 遷移リセット徹底 ＆ Ruf
                     st.session_state.current_opts = []
                     st.rerun()
 
-    # 🌟 最後に必ず音を実行 🌟
-    execute_queued_sound()
+execute_queued_sound()
