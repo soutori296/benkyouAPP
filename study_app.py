@@ -1,5 +1,5 @@
 import streamlit as st
-import base64  # 🌟 173行目で必要なため復活
+import base64  # noqa: F401  # 173行目等で使用するため維持
 import os
 import time
 import re
@@ -16,26 +16,37 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 
-# 💡 音を出すための「予約」をする関数
 def queue_sound(file_path):
-    st.session_state["sound_queue"] = file_path
+    # ファイルが存在するかチェック
+    if os.path.exists(file_path):
+        with open(file_path, "rb") as f:
+            data = f.read()
+            # 音源をテキストデータ(Base64)に変換して予約
+            b64 = base64.b64encode(data).decode()
+            st.session_state["sound_queue_b64"] = b64
+    else:
+        print(f"警告: {file_path} が見つかりません")
 
 
-# 💡 予約された音を「実際に再生」する関数
 def execute_queued_sound():
-    if "sound_queue" in st.session_state and st.session_state["sound_queue"]:
-        sound_file = st.session_state["sound_queue"]
-        # HTMLを使って音を再生（ブラウザの自動再生制限を回避しやすい方法）
+    if "sound_queue_b64" in st.session_state and st.session_state["sound_queue_b64"]:
+        b64_data = st.session_state["sound_queue_b64"]
+        # 💡 HTMLに音源データを直接埋め込んで、強制的に再生させる
         st.components.v1.html(
             f"""
-            <audio autoplay>
-                <source src="{sound_file}" type="audio/mp3">
+            <audio autoplay style="display:none;">
+                <source src="data:audio/mp3;base64,{b64_data}" type="audio/mp3">
             </audio>
+            <script>
+                // ブラウザの制限を回避するための予備命令
+                var audio = document.querySelector('audio');
+                audio.play().catch(e => console.log('再生失敗:', e));
+            </script>
             """,
             height=0,
         )
-        # 再生が終わったら予約を消す
-        st.session_state["sound_queue"] = None
+        # 鳴らした後は空にする
+        st.session_state["sound_queue_b64"] = None
 
 
 # =============================================================================
@@ -183,26 +194,6 @@ def sync_timer(elapsed_to_add=0):
             st.session_state.get("total_seconds", 0) + elapsed_to_add
         )
         return st.session_state.get("daily_seconds", 0) + elapsed_to_add
-
-
-def queue_sound(file_name):
-    if st.session_state.get("sound_enabled", True):
-        st.session_state.play_this = file_name
-
-
-def execute_queued_sound():
-    file_name = st.session_state.get("play_this")
-    if file_name and os.path.exists(file_name):
-        try:
-            with open(file_name, "rb") as f:
-                b64 = base64.b64encode(f.read()).decode()
-                components.html(
-                    f"<script>new Audio('data:audio/mp3;base64,{b64}').play();</script>",
-                    height=0,
-                )
-            st.session_state.play_this = None
-        except Exception:
-            pass
 
 
 # =============================================================================
@@ -522,6 +513,26 @@ def batch_save_to_db(custom_mode=None, custom_qs=None):
 # =============================================================================
 
 
+def get_cooldown_questions(history, cooldown=3):
+    """直近n回分の履歴から問題テキストを抽出する"""
+    recent_texts = set()
+    # 履歴の最後から指定回数分をループ
+    for record in history[-cooldown:]:
+        q_list_str = record.get("問題リスト(JSON)", "[]")
+        try:
+            # 保存されている問題リストを読み込む
+            q_list = json.loads(q_list_str)
+            for q_item in q_list:
+                # 辞書形式なら 'q' キー、文字列ならそのまま追加
+                if isinstance(q_item, dict):
+                    recent_texts.add(q_item.get("q"))
+                else:
+                    recent_texts.add(q_item)
+        except Exception:
+            continue
+    return recent_texts
+
+
 @st.cache_data(ttl=3600)
 def load_db():
     """
@@ -581,26 +592,33 @@ def load_db():
         except Exception as e:
             st.warning(f"習熟度データの解析中に軽微な問題: {e}")
 
-        # 進捗テーブル（カテゴリ別）の作成
+        # --- 進捗テーブル（カテゴリ別）の作成 ---
+        # --- 🚩 進捗テーブル（カテゴリ別）の作成 ---
         st_list = []
         total_opened_count = 0
 
-        # 統計表をスッキリさせるため、カテゴリ名の順序を整えて作成
-        for cat in sorted(cat_total_counts.keys()):
+        # 1. データを収集（ここではまだソートしない）
+        for cat in cat_total_counts.keys():
             total_in_db = cat_total_counts[cat]
-            # 🌟 カテゴリ名が完全一致する正解数を取得
+            # conquered_sets または opened_sets（お使いの変数名に合わせてください）
             done = len(conquered_sets.get(cat, set()))
 
+            # 💡 数値（float）のまま計算する（%は付けない）
             rate = round((done / total_in_db) * 100, 1) if total_in_db > 0 else 0.0
+
             st_list.append(
                 {
                     "カテゴリ": cat,
                     "開拓状況": f"{done} / {total_in_db}",
-                    "開拓率": f"{rate}%",
+                    "🚩 開拓率": rate,  # 💡 ここを数値にするのがポイント
                 }
             )
             total_opened_count += done
 
+        # 🚩 2. 開拓率が「低い順」にソート（数値なので 9.0% と 10.0% が正しく並びます）
+        st_list.sort(key=lambda x: x["🚩 開拓率"])
+
+        # 🚩 3. 全体平均の計算
         all_total = sum(cat_total_counts.values())
         overall_avg = (
             round((total_opened_count / all_total) * 100, 1) if all_total > 0 else 0
@@ -615,6 +633,7 @@ def load_db():
             ss.worksheet("reports").get_all_records() if "reports" in titles else []
         )
 
+        # 最後にすべてをまとめて返す
         return org_questions, {
             "cat_stats": st_list,
             "overall_avg": overall_avg,
@@ -727,10 +746,15 @@ with st.sidebar:
     st.write("**📈 カテゴリ別進捗**")
     if db.get("cat_stats"):
         st.dataframe(
-            pd.DataFrame(db["cat_stats"]),
+            db["cat_stats"],
+            use_container_width=True,
             hide_index=True,
-            width="stretch",  # 2026仕様: width='stretch'
-            height=200,
+            column_config={
+                "🚩 開拓率": st.column_config.NumberColumn(
+                    "🚩 開拓率",
+                    format="%.1f%%",  # 👈 表示するときだけ末尾に % を付ける魔法
+                )
+            },
         )
 
     # 🛠️ 操作パネル (width='stretch' 仕様)
@@ -1094,10 +1118,15 @@ if not st.session_state.mode:
                 key="m_gen_fmt",
             )
 
-            if st.button("ミッションを起動する", width="stretch", type="primary"):
-                # 🌟 1. 卒業(スコア5)除外ロジック
+            if st.button(
+                "ミッションを起動する", use_container_width=True, type="primary"
+            ):
+                # --- 1. 除外リストの作成 (卒業済み & 直近3回) ---
                 graduated = set()
+                recent_q_texts = set()
+
                 try:
+                    # ① 卒業名簿（スコア5以上）の取得
                     gc_tmp = gspread.authorize(get_creds())
                     m_recs = (
                         gc_tmp.open("study_stats_db")
@@ -1105,16 +1134,24 @@ if not st.session_state.mode:
                         .get_all_records()
                     )
                     graduated = {
-                        str(m.get("q")) for m in m_recs if int(m.get("score", 0)) >= 5
+                        str(m.get("q")).strip()
+                        for m in m_recs
+                        if int(m.get("score", 0)) >= 5
                     }
-                except Exception:
-                    pass
 
+                    # ② 直近3回分の履歴（クールダウン）の取得
+                    # セクション7で定義した関数をここで呼び出します
+                    recent_q_texts = get_cooldown_questions(
+                        db.get("history", []), cooldown=3
+                    )
+                except Exception as e:
+                    st.warning(
+                        f"除外リストの作成中にエラーが発生しました（続行します）: {e}"
+                    )
+
+                # --- 2. 抽選プールの準備 ---
                 pool_A, pool_B, pool_C = [], [], []
-
-                # 🌟 2. 検索キーワードの決定（漢字は _ を考慮）
                 prefix = "_" if "漢字" in subj else ""
-                search_key = subj
 
                 for k, ql in all_q.items():
                     # カテゴリフィルタリング
@@ -1131,16 +1168,28 @@ if not st.session_state.mode:
                         continue
 
                     for q_item in ql:
+                        q_text = str(q_item.get("q", "")).strip()
                         q_rank = str(q_item.get("rank", "B")).upper()
+
+                        # 難易度フィルタ
                         if diff != "🌟 総合" and q_rank not in diff:
                             continue
-                        if fmt == "🧩 並べ替え特化" and not re.search(
-                            r"[\(（].*?[/／].*?[\)）]", str(q_item.get("q", ""))
-                        ):
-                            continue
-                        if q_item.get("q") in graduated:
+
+                        # 形式フィルタ（並べ替え特化）
+                        if fmt == "🧩 並べ替え特化":
+                            # 括弧内にスラッシュが含まれるものを並べ替え問題と判定
+                            if not re.search(r"[\(（].*?[/／].*?[\)）]", q_text):
+                                continue
+
+                        # 🚩 【重要】卒業済みの除外
+                        if q_text in graduated:
                             continue
 
+                        # 🚩 【重要】直近3回に出た問題の除外（クールダウン）
+                        if q_text in recent_q_texts:
+                            continue
+
+                        # ランク別にプールへ振り分け
                         if q_rank == "A":
                             pool_A.append(q_item)
                         elif q_rank == "C":
@@ -1148,36 +1197,35 @@ if not st.session_state.mode:
                         else:
                             pool_B.append(q_item)
 
-                # 🌟 3. 黄金比率抽出
+                # --- 3. 黄金比率による抽出 (A:15, B:12, C:3) ---
                 target_A, target_B, target_C = 15, 12, 3
+
+                # 安全にサンプリング（足りない場合はあるだけ取る）
                 sel_A = random.sample(pool_A, min(len(pool_A), target_A))
                 sel_B = random.sample(pool_B, min(len(pool_B), target_B))
                 sel_C = random.sample(pool_C, min(len(pool_C), target_C))
 
                 selection = sel_A + sel_B + sel_C
-                random.shuffle(selection)
+                random.shuffle(selection)  # 出題順をバラバラにする
 
-                # 🌟 4. 保存名の決定と起動
+                # --- 4. ミッション起動と保存 ---
                 if selection:
-                    # 案2：総合で解いても、個別のカテゴリ（1年歴史、2年歴史など）の進捗を伸ばす
+                    # 保存用のモード名を決定
                     if year == "総合":
-                        # 「総合」の時は、選んだ教科名（subj）そのものを保存名にする
-                        # 例：subjが「1年地理」なら、総合モードで解いても「1年地理」として保存
                         mode_name = subj if subj != "すべて" else "総合ミックス"
                     else:
-                        # 通常時は学年と教科を合体（重複はprefixで制御済み）
                         mode_name = (
                             f"{prefix}{year}{subj}"
                             if subj != "すべて"
                             else f"{year}全教科"
                         )
 
-                    # 修正点：selection を渡し、mode_name で保存
+                    # DBへ保存して画面をリロード（ミッション開始！）
                     batch_save_to_db(custom_mode=mode_name, custom_qs=selection)
                     st.rerun()
                 else:
-                    st.warning(
-                        "条件に合う未習得問題がありません。範囲を広げてください。"
+                    st.error(
+                        "条件に合う問題（未習得かつ最近出ていない問題）が見つかりませんでした。範囲を広げるか、クールダウン期間が終わるのを待ってください。"
                     )
 
     with col_gen2:
