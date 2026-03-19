@@ -749,6 +749,7 @@ with st.sidebar:
             db["cat_stats"],
             use_container_width=True,
             hide_index=True,
+            height=250,  # 👈 ここに追加！(300px = 約7〜8行分)
             column_config={
                 "🚩 開拓率": st.column_config.NumberColumn(
                     "🚩 開拓率",
@@ -774,10 +775,10 @@ with st.sidebar:
         if op2.button("💾 保存", width="stretch", disabled=not is_active or is_parent):
             batch_save_to_db()
 
-        # --- 本部戻り・中断 ---
+        # --- ホーム戻り・中断 ---
         nav1, nav2 = st.columns(2, gap="small")
         if st.session_state.get("print_data"):
-            if nav1.button("⬅️ 本部", width="stretch"):
+            if nav1.button("⬅️ ホーム", width="stretch"):
                 st.session_state.print_data = None
                 st.rerun()
         else:
@@ -891,7 +892,7 @@ if st.session_state.get("print_data"):
     st.stop()
 
 # =============================================================================
-# 11. メイン画面：本部（未攻略優先生成・履歴管理機能・メモ復元）
+# 11. メイン画面：ホーム（未攻略優先生成・履歴管理機能・メモ復元）
 # =============================================================================
 
 if not st.session_state.mode:
@@ -1342,7 +1343,7 @@ if not st.session_state.mode:
             st.write("キーワードを入れてください（スペースで絞り込み、カンマで追加）")
 
     # =============================================================================
-    # 11. メイン画面：本部（一括削除バー ＆ ゴミ箱撤廃版）
+    # 11. メイン画面：ホーム（一括削除バー ＆ ゴミ箱撤廃版）
     # =============================================================================
     st.subheader("📅 MISSION LOG")
 
@@ -1454,9 +1455,42 @@ if not st.session_state.mode:
                             # (特訓の処理... 省略)
                             pass
 
-                        # --- 題・答ボタン ---
-                        c_pq.button("📄 題", key=f"pq_{tid}", use_container_width=True)
-                        c_pa.button("🔑 答", key=f"pa_{tid}", use_container_width=True)
+                        # --- 📄 題・🔑 答ボタン ---
+                        if c_pq.button(
+                            "📄 題", key=f"pq_{tid}", use_container_width=True
+                        ):
+                            # JSONから問題リストを復元
+                            q_json = json.loads(h.get("問題リスト(JSON)", "[]"))
+                            target_qs = [
+                                next((q for q in flat_pool if q["q"] == t), None)
+                                for t in q_json
+                            ]
+                            st.session_state.print_type = "q"
+                            st.session_state.print_data = {
+                                "mode": h.get("教科"),
+                                "id": tid,
+                                "qs": [q for q in target_qs if q],
+                            }
+                            st.rerun()
+
+                        if c_pa.button(
+                            "🔑 答", key=f"pa_{tid}", use_container_width=True
+                        ):
+                            if st.session_state.get("parent_unlock_key") == "7777":
+                                q_json = json.loads(h.get("問題リスト(JSON)", "[]"))
+                                target_qs = [
+                                    next((q for q in flat_pool if q["q"] == t), None)
+                                    for t in q_json
+                                ]
+                                st.session_state.print_type = "a"
+                                st.session_state.print_data = {
+                                    "mode": h.get("教科"),
+                                    "id": tid,
+                                    "qs": [q for q in target_qs if q],
+                                }
+                                st.rerun()
+                            else:
+                                st.toast("キーが必要です", icon="🔒")
 
                         # --- メモ・除外・保存ボタン ---
                         c_m1, c_m2, c_m3 = st.columns([3, 2, 1])
@@ -1515,7 +1549,7 @@ else:  # --- 特訓モード：音質復旧 ＆ 遷移リセット徹底 ＆ Ruf
             st.rerun()
 
         if c_sv.button(
-            "💾 保存して本部へ戻る", type="primary", use_container_width=True
+            "💾 保存してホームへ戻る", type="primary", use_container_width=True
         ):
             batch_save_to_db()
             st.session_state.mode = None
