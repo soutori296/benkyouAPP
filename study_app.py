@@ -93,6 +93,11 @@ def inject_muscular_styles():
             justify-content: flex-end !important;
             padding-right: 18px !important;
         }
+        /* 🌟 【追加：縦の隙間を詰める】 🌟 */
+        /* ステータス行（Mission...）の下の余白を削る */
+        [data-testid="stHorizontalBlock"] {
+            margin-bottom: -10px !important; 
+        }
         @media print {
             @page { size: 210mm 4000mm; margin: 15mm; }
             section[data-testid="stSidebar"], header, .stButton, 
@@ -196,6 +201,155 @@ def sync_timer(elapsed_to_add=0):
         return st.session_state.get("daily_seconds", 0) + elapsed_to_add
 
 
+def assign_missing_ids():
+    """
+    O列(15列目)が空の行に、一括でUUIDを付与する（API制限回避版）
+    """
+    try:
+        creds = get_creds()
+        client = gspread.authorize(creds)
+        sh = client.open("study_stats_db").worksheet("questions")
+
+        # 全データを取得
+        records = sh.get_all_values()
+        if not records:
+            return
+
+        # 1. 既存の全IDを取得してダブりチェック用セットを作成
+        existing_ids = {row[14] for row in records if len(row) >= 15 and row[14]}
+
+        # 更新用リストを準備
+        cells_to_update = []
+        updated_count = 0
+
+        with st.spinner("一括更新データを準備中..."):
+            for i, row in enumerate(records[1:], start=2):  # 2行目から
+                current_id = row[14] if len(row) >= 15 else ""
+
+                if not current_id or str(current_id).strip() == "":
+                    # 重複しないIDを生成
+                    new_uuid = str(uuid.uuid4())
+                    while new_uuid in existing_ids:
+                        new_uuid = str(uuid.uuid4())
+
+                    # 💡 書き込み予約（セルオブジェクトを作成）
+                    from gspread.cell import Cell
+
+                    cells_to_update.append(Cell(row=i, col=15, value=new_uuid))
+                    existing_ids.add(new_uuid)
+                    updated_count += 1
+
+        # 2. 💡 まとめて一括書き込み（ここがAPI節約のポイント）
+        if cells_to_update:
+            with st.spinner(f"{updated_count}件をスプレッドシートに一括保存中..."):
+                sh.update_cells(cells_to_update)
+            st.success(f"✅ {updated_count}件の問題に新しいIDを付与しました。")
+        else:
+            st.info("ℹ️ すべての問題にIDが設定済みです。")
+
+    except Exception as e:
+        st.error(f"ID付与エラー: {e}")
+
+
+def archive_and_delete_question(q_data):
+    """
+    指定された問題を 'deleted_questions' シートへ移動し、元から削除する
+    """
+    try:
+        creds = get_creds()
+        client = gspread.authorize(creds)
+        ss = client.open("study_stats_db")
+        main_sh = ss.worksheet("questions")
+
+        target_id = q_data.get("id")
+        if not target_id:
+            st.error(
+                "この問題にはIDがないため削除できません。管理者にID付与を依頼してください。"
+            )
+            return
+
+        # 1. 元シートからIDを探して行番号を特定
+        id_col = main_sh.col_values(15)
+        try:
+            row_idx = id_col.index(str(target_id)) + 1
+        except ValueError:
+            st.error("スプレッドシート上で対象のIDが見つかりませんでした。")
+            return
+
+        # 2. 削除用シートへ移動
+        try:
+            del_sh = ss.worksheet("deleted_questions")
+        except Exception:
+            del_sh = ss.add_worksheet(title="deleted_questions", rows="100", cols="20")
+            del_sh.append_row(list(q_data.keys()) + ["deleted_at"])
+
+        archive_row = list(q_data.values()) + [
+            datetime.now(timezone(timedelta(hours=9))).isoformat()
+        ]
+        del_sh.append_row(archive_row)
+
+        # 3. 物理削除
+        main_sh.delete_rows(row_idx)
+        st.toast("問題をアーカイブへ移動しました。")
+        time.sleep(1)
+        st.rerun()
+    except Exception as e:
+        st.error(f"削除失敗: {e}")
+
+
+# -----------------------------------------------------------------------------
+# 🛠️ データベース保守用：特定IDの問題を削除＆退避する関数
+# -----------------------------------------------------------------------------
+def delete_question_by_id(target_id):
+    """
+    指定されたIDの問題を questions シートから削除し、deleted_questions シートへ移動
+    """
+    try:
+        # スプレッドシートへの接続
+        gc = gspread.authorize(get_creds())
+        doc = gc.open("study_stats_db")  # ←ここ、実際のシート名と合っているか確認！
+        sh_q = doc.worksheet("questions")
+
+        # 退避用シート（deleted_questions）を開く。なければ作成。
+        try:
+            sh_del = doc.worksheet("deleted_questions")
+        except Exception:
+            sh_del = doc.add_worksheet(title="deleted_questions", rows="100", cols="20")
+            # 1行目にヘッダーを入れる
+            sh_del.append_row(sh_q.row_values(1))
+
+        # 1. シートの全データを取得（API節約のため一括取得）
+        all_rows = sh_q.get_all_values()
+        id_column_idx = 14  # O列は0から数えて14番目
+
+        found_row_idx = -1
+        row_content = []
+
+        for i, row in enumerate(all_rows):
+            # 1行目（ヘッダー）は飛ばす
+            if i == 0:
+                continue
+
+            # IDが一致するか確認
+            if len(row) > id_column_idx and str(row[id_column_idx]) == str(target_id):
+                found_row_idx = i + 1  # Googleシートは1行目から始まるので+1
+                row_content = row
+                break
+
+        if found_row_idx > 1:
+            # 2. 退避用シートにデータを追加
+            sh_del.append_row(row_content)
+            # 3. 元のシートからその行を削除
+            sh_q.delete_rows(found_row_idx)
+            return True
+        else:
+            return False
+
+    except Exception as e:
+        st.error(f"削除エラー発生: {e}")
+        return False
+
+
 # =============================================================================
 # 4. 解析・比較エンジン
 # =============================================================================
@@ -263,59 +417,55 @@ def get_skip_indices(text):
 
 
 def get_kanji_score(canvas_result, char, correct_strokes):
+    """
+    230サイズで判定を行います。
+    補助線なし、位置補正なしのストイックな記憶判定ロジックです。
+    """
     if canvas_result is None or canvas_result.json_data is None:
-        return 0
+        return 0, "まずは一画書いてみよう！"
 
-    # 1. 画数チェック（ここは維持：±2画）
+    # 1. 画数チェック (±2画)
     user_strokes = len(canvas_result.json_data["objects"])
     try:
         if correct_strokes and str(correct_strokes).strip().isdigit():
             target_s = int(float(correct_strokes))
             if abs(user_strokes - target_s) > 2:
-                return -1
+                return -1, f"画数が違います（現在 {user_strokes} 画）。"
     except Exception:
         pass
 
-    # 2. マスク準備
-    size = 300
+    # 2. マスク準備 (230x230サイズ)
+    size = 230
     user_mask_raw = canvas_result.image_data[:, :, 3] > 0
-    img_tmp = Image.fromarray(user_mask_raw).resize((size, size))
-    user_mask = np.array(img_tmp)
+    if user_mask_raw.sum() == 0:
+        return 0, "形をイメージしてから書いてみよう。"
 
-    if user_mask.sum() == 0:
-        return 0
+    # 230x230としてそのまま判定（位置のズレを許容しない）
+    user_mask = np.array(Image.fromarray(user_mask_raw).resize((size, size)))
 
-    # 3. お手本描画（フォント優先順位：fonts/ipaexg.ttf を最優先）
+    # 3. お手本描画
     target_img = Image.new("L", (size, size), 0)
     font = None
+    # 230サイズに合わせてフォントサイズを 165 程度に調整
     fps = [
         os.path.join("fonts", "ipaexg.ttf"),
+        "/usr/share/fonts/truetype/fonts-japanese-gothic.ttf",
         r"C:\Windows\Fonts\msgothic.ttc",
-        r"C:\Windows\Fonts\msmincho.ttc",
     ]
     for fp in fps:
         if os.path.exists(fp):
             try:
-                font = ImageFont.truetype(fp, 210)
+                font = ImageFont.truetype(fp, 165)
                 break
             except Exception:
                 continue
     if not font:
         font = ImageFont.load_default()
-
     draw = ImageDraw.Draw(target_img)
-    draw.text(
-        (size // 2, size // 2), char, font=font, fill=255, anchor="mm", stroke_width=2
-    )
+    draw.text((size // 2, size // 2), char, font=font, fill=255, anchor="mm")
     target_mask = np.array(target_img) > 0
 
-    # 4. 形状チェック（バウンディングボックス）
-    rows = np.any(user_mask, axis=1)
-    cols = np.any(user_mask, axis=0)
-    ymin, ymax = np.where(rows)[0][[0, -1]]
-    xmin, xmax = np.where(cols)[0][[0, -1]]
-
-    # 5. 一致度計算 (F-Score)
+    # 4. 一致度計算 (F-Score)
     overlap = np.logical_and(target_mask, user_mask).sum()
     recall = overlap / target_mask.sum() if target_mask.sum() > 0 else 0
     precision = overlap / user_mask.sum() if user_mask.sum() > 0 else 0
@@ -325,21 +475,15 @@ def get_kanji_score(canvas_result, char, correct_strokes):
         else 0
     )
 
-    # 6. 🌟 yoshiリカバリー・プロトコル：判定を少し緩く 🌟
-    if f_score > 0.70:  # 以前は0.75
-        return 100
-    elif f_score > 0.35:  # 以前は0.45
-        return 66
-    elif f_score > 0.12:  # 以前は0.18
-        # 中央距離チェックも100pxまで緩和（以前は80px）
-        center_dist = abs((xmin + xmax) / 2 - size / 2) + abs(
-            (ymin + ymax) / 2 - size / 2
-        )
-        if center_dist > 100:
-            return 0
-        return 34
+    # 5. スコア決定（階段式 34/66/100）
+    if f_score > 0.65:
+        return 100, "バッチリ！完璧に思い出せましたね💮"
+    elif f_score > 0.35:
+        return 66, "だいたい合っています！一度クリアして書き直してみよう。"
+    elif f_score > 0.15:
+        return 34, "場所は捉えられています！次は形（パーツ）を思い出して。"
 
-    return 0
+    return 0, "位置がずれているかもしれません。お手本をよく見て思い出そう。"
 
 
 # =============================================================================
@@ -549,14 +693,23 @@ def load_db():
 
         # --- 1. 全問題（questions）の取得 ---
         q_rows = ss.worksheet("questions").get_all_records()
+
+        # 💡 [追加] ヘッダーから15列目(O列)の実際の名前を取得します
+        q_sheet = ss.worksheet("questions")
+        q_headers = q_sheet.row_values(1)
+        # O列(15番目)の名前を取得（例: "id" や "UUID" など）
+        id_col_name = q_headers[14] if len(q_headers) >= 15 else "id"
+
         org_questions = {}
-        cat_total_counts = {}
+        cat_total_counts = {}  # 🌟 ここで初期化するのでエラーになりません
 
         for r in q_rows:
             cat = str(r.get("category", "共通")).strip()
             rank_val = str(r.get("rank", "B")).upper().strip()
 
+            # 💡 [最重要] question_dataの中に "id" を読み込む設定を追加
             question_data = {
+                "id": str(r.get(id_col_name, "")).strip(),  # 🌟 O列からIDを確実に取得
                 "q": str(r.get("q", "")),
                 "a": str(r.get("a", "")),
                 "h": str(r.get("h", "")),
@@ -566,12 +719,15 @@ def load_db():
                 "unit": str(r.get("unit", r.get("sub_category", ""))),
             }
 
+            # 画数データの取得などは維持
             for i in range(1, 11):
                 col_name = f"strokes{i}"
                 if col_name in r:
                     question_data[col_name] = r[col_name]
 
+            # カテゴリ別に問題を格納
             org_questions.setdefault(cat, []).append(question_data)
+            # 📈 各カテゴリの総問題数をカウント
             cat_total_counts[cat] = cat_total_counts.get(cat, 0) + 1
 
         # --- 2. 習熟度（mastery）に基づく統計計算 ---
@@ -661,6 +817,7 @@ def init_session():
         "questions": [],
         "index": 0,
         "mode": None,
+        "show_help_persistence": False,  # 💡 ヘルプの状態を保持する変数
         "show_options": False,
         "show_result": False,
         "last_is_correct": False,
@@ -748,7 +905,7 @@ with st.sidebar:
         st.dataframe(
             db["cat_stats"],
             width="stretch",
-            height=250,  # 👈 縦幅を固定（約8行分でスクロール）
+            height=250,
             hide_index=True,
             column_config={
                 "🚩 開拓率": st.column_config.NumberColumn(
@@ -758,7 +915,7 @@ with st.sidebar:
             },
         )
 
-    # 🛠️ 操作パネル (width='stretch' 仕様)
+    # 🛠️ 操作パネル
     with st.container(border=True):
         st.markdown(
             "<p style='margin:0; font-weight:bold; text-align:center;'>🛠️ 操作パネル</p>",
@@ -809,15 +966,19 @@ with st.sidebar:
                 "show_rpt_expander", False
             )
 
-    # 不備報告フォーム
+    # 🚨 不備報告・削除フォーム
     if st.session_state.get("show_rpt_expander", False) and is_active:
         cur_idx = st.session_state.index
         if cur_idx < len(st.session_state.questions):
             q_now = st.session_state.questions[cur_idx]
             with st.container(border=True):
-                st.markdown("**🚨 問題の不備を報告**")
+                st.markdown("**🚨 問題の不備を報告・削除**")
                 rpt_msg = st.text_input("誤植・内容の不備など", key=f"rpt_in_{cur_idx}")
-                if st.button("送信する", type="primary", width="stretch"):
+
+                # ボタンを横並びに配置
+                c_rpt_send, c_rpt_del = st.columns(2, gap="small")
+
+                if c_rpt_send.button("送信する", type="primary", width="stretch"):
                     try:
                         gc_rpt = gspread.authorize(get_creds())
                         sh_rpt = gc_rpt.open("study_stats_db").worksheet("reports")
@@ -836,6 +997,15 @@ with st.sidebar:
                         st.rerun()
                     except Exception as e:
                         st.toast(f"送信エラー: {e}", icon="⚠️")
+
+                # 🗑️ 削除ボタン（archive_and_delete_questionを呼び出し）
+                if c_rpt_del.button(
+                    "🗑️ 削除",
+                    type="secondary",
+                    width="stretch",
+                    help="問題をアーカイブへ移動して完全に削除します",
+                ):
+                    archive_and_delete_question(q_now)
 
     # ロック解除キー (Ruff & アクセシビリティ対応)
     st.markdown(
@@ -905,12 +1075,27 @@ if not st.session_state.mode:
     # =========================================================================
     if st.session_state.get("parent_unlock_key") == "7777":
         st.subheader("🛠️ データ管理・監査システム")
-        with st.expander("データベース全同期 ＆ 監査ツール", expanded=False):
+
+        with st.expander("🛠️ データベース保守 ＆ 監査ツール", expanded=False):
+            # --- 1. ID一括管理セクション (新設) ---
+            st.markdown("#### 🆔 問題ID一括管理")
+            st.caption(
+                "スプレッドシートのO列(15列目)をスキャンし、IDがない問題にのみUUIDを付与します。"
+            )
+            if st.button(
+                "🆔 未採番行にIDを一括付与", type="primary", use_container_width=True
+            ):
+                assign_missing_ids()  # API制限回避版の一括書き込み関数
+            st.divider()
+
+            # --- 2. 同期・監査セクション ---
             col_ad1, col_ad2 = st.columns(2)
 
             with col_ad1:
                 st.markdown("**🔄 Mastery全同期（最終診断版）**")
-                if st.button("全同期を実行する", width="stretch", type="primary"):
+                if st.button(
+                    "全同期を実行する", use_container_width=True, type="primary"
+                ):
                     try:
                         gc_ad = gspread.authorize(get_creds())
                         sh_m_ad = gc_ad.open("study_stats_db").worksheet("mastery")
@@ -918,7 +1103,6 @@ if not st.session_state.mode:
                         m_headers = m_all[0]
                         m_q_idx = m_headers.index("q")
 
-                        # 既存データのマップ
                         mastery_map = {
                             r[m_q_idx].strip(): r for r in m_all[1:] if len(r) > m_q_idx
                         }
@@ -929,24 +1113,19 @@ if not st.session_state.mode:
                         q_all = sh_q_current.get_all_values()
                         q_headers = q_all[0]
 
-                        # インデックスの特定
                         q_q_idx = q_headers.index("q") if "q" in q_headers else 1
                         q_a_idx = q_headers.index("a") if "a" in q_headers else 5
-                        q_cat_idx = 0
-                        # ⭐ QuestionsのB列(インデックス1)を中分類とする
-                        q_unit_idx = 1
+                        q_cat_idx, q_unit_idx = 0, 1
 
                         new_mastery_list = []
-                        update_count = 0
-
                         for q_row in q_all[1:]:
                             if len(q_row) <= max(q_q_idx, q_a_idx):
                                 continue
-
-                            q_text = q_row[q_q_idx].strip()
-                            q_ans = q_row[q_a_idx].strip()
-                            q_cat = q_row[q_cat_idx].strip()
-                            # ⭐ QuestionsのB列から中分類を取得
+                            q_text, q_ans, q_cat = (
+                                q_row[q_q_idx].strip(),
+                                q_row[q_a_idx].strip(),
+                                q_row[q_cat_idx].strip(),
+                            )
                             q_unit = (
                                 q_row[q_unit_idx].strip()
                                 if len(q_row) > q_unit_idx
@@ -955,115 +1134,129 @@ if not st.session_state.mode:
 
                             if q_text in mastery_map:
                                 row = mastery_map[q_text]
-
-                                # ⭐ リストを無理やり7列（インデックス6）まで拡張する
                                 while len(row) < 7:
                                     row.append("")
-
-                                # 解答(5)と中分類(6)を同期
-                                row[5] = q_ans
-                                row[6] = q_unit  # これがG列になります
-                                row[0] = q_cat
+                                row[5], row[6], row[0] = q_ans, q_unit, q_cat
                                 new_mastery_list.append(row)
                             else:
-                                # 新規：[cat, q, score, miss, date, ans, unit]
-                                new_row = [q_cat, q_text, "0", "0", "", q_ans, q_unit]
-                                new_mastery_list.append(new_row)
+                                new_mastery_list.append(
+                                    [q_cat, q_text, "0", "0", "", q_ans, q_unit]
+                                )
 
-                        # --- 書き込み（G列まで拡大） ---
                         if new_mastery_list:
-                            # ⭐ A2 から G列 までの範囲を対象にする
                             last_row_old = len(m_all) + 100
                             sh_m_ad.batch_clear([f"A2:G{last_row_old}"])
-
                             sh_m_ad.update(
                                 range_name=f"A2:G{len(new_mastery_list) + 1}",
                                 values=new_mastery_list,
                             )
 
                         st.success(
-                            f"✨ 同期成功！ G列（中分類）を含めて {len(new_mastery_list)} 件を更新しました。"
+                            f"✨ 同期成功！ {len(new_mastery_list)} 件を更新しました。"
                         )
-
                     except Exception as e:
                         st.error(f"同期エラー: {e}")
 
             with col_ad2:
-                # 🌟 [最新・柔軟版] 超精密・英語整合性監査システム
                 st.markdown("**🔎 データ監査（英語・超精密）**")
-                st.caption(
-                    "熟語や空白を考慮して、正解文と選択肢の不一致をあぶり出します。"
-                )
-
                 if st.button(
-                    "超精密・整合性監査を実行", width="stretch", type="primary"
+                    "超精密・整合性監査を実行", use_container_width=True, type="primary"
                 ):
                     error_details = []
                     for cat_name, q_list in all_q.items():
                         if "英語" in cat_name:
                             for q_ad in q_list:
-                                q_txt = str(q_ad.get("q", ""))
-                                ans_txt = str(q_ad.get("a", ""))  # F列(a)を読み込む
-
-                                # 並べ替え問題（カッコとスラッシュあり）のみを抽出
+                                q_txt, ans_txt = (
+                                    str(q_ad.get("q", "")),
+                                    str(q_ad.get("a", "")),
+                                )
                                 m = re.search(r"[\(（](.*?)[\)）]", q_txt)
                                 if m and re.search(r"[/／]", m.group(1)):
-                                    # 1. 選択肢リスト作成
                                     opts = [
                                         w.strip().lower().rstrip("?!.,")
                                         for w in re.split(r"[/／]", m.group(1))
                                         if w.strip()
                                     ]
-
-                                    # 2. 正解文を小文字化して準備
-                                    temp_ans = ans_txt.lower().rstrip("?!.,")
-                                    ans_words_found = []
-
-                                    # 3. 熟語対応ロジック：長い選択肢から順に正解文の中にあるかチェック
+                                    temp_ans, ans_words_found = (
+                                        ans_txt.lower().rstrip("?!.,"),
+                                        [],
+                                    )
                                     sorted_opts = sorted(opts, key=len, reverse=True)
                                     test_ans = temp_ans
                                     for opt in sorted_opts:
                                         if opt in test_ans:
                                             ans_words_found.append(opt)
-                                            test_ans = test_ans.replace(
-                                                opt, "", 1
-                                            )  # 消費した単語を消す
-
-                                    # 4. 照合：選択肢にある単語が正解文に足りない場合を特定
+                                            test_ans = test_ans.replace(opt, "", 1)
                                     missing = [
                                         o
                                         for o in opts
                                         if opts.count(o) > ans_words_found.count(o)
                                     ]
-
                                     if missing:
                                         error_details.append(
-                                            f"❌ {q_txt[:25]}... \n   ➡ 【不足/不一致: {set(missing)}】"
+                                            f"❌ {q_txt[:25]}... \n ➡ 【不足: {set(missing)}】"
                                         )
 
                     if error_details:
-                        st.error(f"{len(error_details)}件の整合性不備を発見しました。")
+                        st.error(f"{len(error_details)}件の不備を発見しました。")
                         for i, err in enumerate(error_details):
                             st.code(f"No.{i} | {err}")
                     else:
-                        st.success(
-                            "すべての並べ替え問題の整合性が確認されました！完璧なデータです。"
-                        )
+                        st.success("すべての整合性が確認されました！")
 
             st.divider()
 
-            # 3. CSVバックアップ機能
-            st.markdown("**💾 ローカルバックアップ (CSV)**")
-            df_hist = pd.DataFrame(db.get("history", []))
-            if not df_hist.empty:
-                csv_hist = df_hist.to_csv(index=False).encode("utf-8-sig")
-                st.download_button(
-                    "📥 History (履歴) をCSVでダウンロード",
-                    data=csv_hist,
-                    file_name=f"history_backup_{datetime.now(JST).strftime('%Y%m%d')}.csv",
-                    mime="text/csv",
-                    width="stretch",
-                )
+            # --- 3. バックアップ ＆ 削除データ抽出 ---
+            st.markdown("#### 💾 データエクスポート")
+            c_ex1, c_ex2 = st.columns(2)
+
+            with c_ex1:
+                st.markdown("**📝 学習履歴**")
+                df_hist = pd.DataFrame(db.get("history", []))
+                if not df_hist.empty:
+                    csv_hist = df_hist.to_csv(index=False).encode("utf-8-sig")
+                    st.download_button(
+                        "📥 History (履歴) CSV",
+                        data=csv_hist,
+                        file_name=f"history_backup_{datetime.now(JST).strftime('%Y%m%d')}.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                    )
+                else:
+                    st.button("履歴データなし", disabled=True, use_container_width=True)
+
+            with c_ex2:
+                st.markdown("**📊 削除ログ**")
+                if st.button("📈 削除データのExcel準備", use_container_width=True):
+                    try:
+                        gc = gspread.authorize(get_creds())
+                        try:
+                            del_sh = gc.open("study_stats_db").worksheet(
+                                "deleted_questions"
+                            )
+                            del_df = pd.DataFrame(del_sh.get_all_records())
+                        except Exception:
+                            del_df = pd.DataFrame()
+
+                        if not del_df.empty:
+                            import io
+
+                            output = io.BytesIO()
+                            with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+                                del_df.to_excel(
+                                    writer, index=False, sheet_name="Deleted_Log"
+                                )
+                            st.download_button(
+                                "📥 Excelをダウンロード",
+                                data=output.getvalue(),
+                                file_name=f"deleted_log_{datetime.now(JST).strftime('%Y%m%d')}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                use_container_width=True,
+                            )
+                        else:
+                            st.warning("アーカイブされた削除データはありません。")
+                    except Exception as e:
+                        st.error(f"抽出失敗: {e}")
 
     if db.get("reports") and st.session_state.get("parent_unlock_key") == "7777":
         st.subheader("⚠️ 未処理の不備報告")
@@ -1122,6 +1315,8 @@ if not st.session_state.mode:
             if st.button(
                 "ミッションを起動する", use_container_width=True, type="primary"
             ):
+                st.session_state.show_help_persistence = False  # 💡 追加
+
                 # --- 1. 除外リストの作成 (卒業済み & 直近3回) ---
                 graduated = set()
                 recent_q_texts = set()
@@ -1236,6 +1431,7 @@ if not st.session_state.mode:
                 "特訓教科", ["すべて"] + available_cats, key="w_subj_sel"
             )
             if st.button("特訓を開始！", width="stretch"):
+                st.session_state.show_help_persistence = False  # 💡 追加
                 graduated = set()
                 try:
                     gc_tmp = gspread.authorize(get_creds())
@@ -1328,6 +1524,7 @@ if not st.session_state.mode:
                     width="stretch",
                     key="start_and_or_mission",
                 ):
+                    st.session_state.show_help_persistence = False  # 💡 追加
                     # ランダム抽出
                     selection = random.sample(found_pool, num_to_draw)
 
@@ -1440,6 +1637,7 @@ if not st.session_state.mode:
                         if c_go.button(
                             "🔄 特訓", key=f"go_{tid}", type="primary", width="stretch"
                         ):
+                            st.session_state.show_help_persistence = False  # 💡 追加
                             keys_to_reset = [
                                 "questions",
                                 "index",
@@ -1533,24 +1731,19 @@ if not st.session_state.mode:
                             except Exception:
                                 st.error("保存失敗")
 
-# =============================================================================
-# 12. 特訓モード：筋肉質ハイブリッドエンジン (1行集約・点滅ゼロ版)
-# =============================================================================
-else:  # --- 特訓モード：音質復旧 ＆ 遷移リセット徹底 ＆ Ruff警告なし完全版 ---
+else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版 ---
     idx = st.session_state.index
     qs = st.session_state.questions
 
     if idx >= len(qs):
         # =========================================================
-        # 🏁 MISSION COMPLETE 画面
+        # 🏁 MISSION COMPLETE 画面（変更なし）
         # =========================================================
         st.balloons()
         st.title("MISSION COMPLETE!")
-
         sc = 0
         if len(qs) > 0:
             sc = round((st.session_state.correct_count / len(qs)) * 100, 1)
-
         st.markdown(f"# 到達率: {sc}%")
 
         if st.session_state.is_cheating_flagged:
@@ -1574,419 +1767,579 @@ else:  # --- 特訓モード：音質復旧 ＆ 遷移リセット徹底 ＆ Ruf
             st.rerun()
 
     else:
+        # =========================================================
+        # 📖 問題実行中
+        # =========================================================
         q = qs[idx]
-        cat = q.get("orig_cat", "")
-        is_kanji = "漢字" in cat
-        ans_raw = str(q["a"]).strip()
+        # 現在の問題データを削除等のためにセッションに保持
+        st.session_state["current_question"] = q
 
+        cat = q.get("orig_cat", "")
+        ans_raw = str(q.get("a", "")).strip()
+        is_kanji = "漢字" in cat
+
+        # 並べ替え判定
+        en_disp, jp_disp, choices_q = parse_order_question(q.get("q", ""), cat)
+        is_order = (
+            "英語" in cat and (len(choices_q) > 0 or "/" in ans_raw or " " in ans_raw)
+        ) or ("/" in ans_raw)
+
+        # 💡 判定ボタンを表示するか（4択モードのみTrue）
+        show_judge_button = not (is_kanji or is_order)
+
+        # 2. 問題メインコンテンツの表示
         if is_kanji:
-            # -----------------------------------------------------
-            # 🈲 漢字専用レイアウト（サイドバー保護版）
-            # -----------------------------------------------------
+            # キャンバスの枠線設定（230px / 補助線なし）
             st.markdown(
-                r"""<style>
-                [data-testid="stMain"] .block-container { padding-top: 5.0rem !important; } 
-                </style>""",
+                r"""
+                <style>
+                canvas.stCanvas {
+                    background-color: #ffffff !important;
+                    border: 1px solid #ddd !important;
+                    border-radius: 4px;
+                    width: 230px !important;
+                    height: 230px !important;
+                }
+                </style>
+                """,
                 unsafe_allow_html=True,
             )
+
+            st.markdown(
+                f"<div style='text-align:center; font-size:20px; font-weight:bold; margin-bottom:10px;'>🛡️ 漢字特訓：{q['q']}</div>",
+                unsafe_allow_html=True,
+            )
+
             chars = list(ans_raw)
+            # セッション状態の初期化
             if "kj_scores" not in st.session_state or st.session_state.get(
                 "kj_q_id"
             ) != q.get("q"):
                 st.session_state.kj_scores = {i: 0 for i in range(len(chars))}
                 st.session_state.kj_q_id = q.get("q")
 
-            # 1. Mission表示
-            st.caption(
-                f"Mission {idx + 1}/{len(qs)} | ⭕️ {st.session_state.correct_count}"
-            )
-
-            # 2. 問題文
-            st.markdown(
-                f"<div style='text-align:center; font-size:22px; font-weight:bold; margin-bottom:10px;'>🛡️ 漢字特訓：{q['q']}</div>",
-                unsafe_allow_html=True,
-            )
-
-            # 3. 漢字入力エリア
-            cols = st.columns(len(chars))
+            cols_kj = st.columns(len(chars))
             for i, char in enumerate(chars):
-                with cols[i]:
+                with cols_kj[i]:
+                    stroke_setting = q.get(f"strokes{i + 1}")
+                    is_target_kanji = (
+                        stroke_setting and str(stroke_setting).strip().isdigit()
+                    )
+
+                    if not is_target_kanji:
+                        # 画数設定がない文字（ひらがな等）は自動合格
+                        st.session_state.kj_scores[i] = 100
+                        st.markdown(
+                            f"<div style='text-align:center; font-weight:bold; color:#999;'>{char}</div>",
+                            unsafe_allow_html=True,
+                        )
+                        st.markdown(
+                            f"<div style='text-align:center; background:#f8f9fa; border:1px solid #eee; border-radius:10px; font-size:60px; font-family:serif; color:#ddd; height:230px; display:flex; align-items:center; justify-content:center;'>{char}</div>",
+                            unsafe_allow_html=True,
+                        )
+                        continue
+
+                    # 現在のスコアを取得
                     score_val = st.session_state.kj_scores[i]
+
+                    # 🌟 進行度に合わせて「漢字名」と「お手本」の透明度を変える
+                    # 0%   : 1.0 (くっきり)
+                    # 34%  : 0.15 (うっすら)
+                    # 66%  : 0.0 (完全に消える)
+                    # 100% : 1.0 (正解確認のため再表示)
+                    opacity = 1.0
+                    if score_val == 34:
+                        opacity = 0.15
+                    elif score_val == 66:
+                        opacity = 0.0
+                    elif score_val == 100:
+                        opacity = 1.0
+
+                    hint_key, lock_key = f"kj_hint_{idx}_{i}", f"kj_locked_{idx}_{i}"
+                    if hint_key not in st.session_state:
+                        st.session_state[hint_key] = (
+                            "まずはお手本を見て、形を脳に写そう！"
+                        )
+                    if lock_key not in st.session_state:
+                        st.session_state[lock_key] = False
+
+                    # 🌟 漢字名（％）の表示：透明度を連動
                     st.markdown(
-                        f"<div style='text-align:center; font-weight:bold;'>{char} ({min(100, score_val)}%)</div>",
+                        f"""
+                        <div style='text-align:center; font-weight:bold; opacity: {opacity}; transition: opacity 0.5s;'>
+                            {char} ({min(100, score_val)}%)
+                        </div>
+                        """,
                         unsafe_allow_html=True,
                     )
 
                     with st.container(border=True):
-                        # お手本エリア
+                        # 🌟 お手本表示：透明度を連動
                         st.markdown(
                             f"""
-                            <div style='text-align:center; background:#f8f9fb; padding:5px; border-radius:10px 10px 0 0; margin-bottom:0px; border-bottom:1px solid #ddd;'>
-                                <div style='font-size:80px; font-family:serif; color:#333; line-height:1;'>{char}</div>
-                                <div style='font-size:11px; color:#666; margin-top:2px;'>正解：{q.get(f"strokes{i + 1}", "??")}画</div>
+                            <div style='text-align:center;'>
+                                <div style='font-size:55px; font-family:serif; opacity: {opacity}; transition: opacity 0.5s;'>{char}</div>
+                                <div style='font-size:10px;'>{stroke_setting}画</div>
                             </div>
                             """,
                             unsafe_allow_html=True,
                         )
-
                         st.progress(min(100, score_val) / 100)
 
                         if score_val < 100:
                             r_key = st.session_state.get(f"reset_{idx}_{i}", 0)
+
+                            # キャンバス本体（230x230）
                             cv_res = st_canvas(
                                 stroke_width=8,
                                 stroke_color="#000000",
-                                height=280,
-                                width=280,
+                                height=230,
+                                width=230,
                                 key=f"kj_cv_{idx}_{i}_{r_key}",
                                 display_toolbar=False,
+                                background_color="#ffffff",
                             )
-                            # ...（以下、ボタン処理などは維持）
 
-                            # 採点・クリアボタン
                             b1, b2 = st.columns(2)
+
                             if b1.button(
-                                "📮 採点",
+                                "📮 判定",
                                 key=f"score_{idx}_{i}",
                                 use_container_width=True,
                             ):
-                                s_p = get_kanji_score(
-                                    cv_res, char, q.get(f"strokes{i + 1}", 10)
-                                )
-                                if s_p > 0:
-                                    queue_sound("correct.mp3")
-                                    if s_p >= 85:
+                                if st.session_state[lock_key]:
+                                    st.warning("一度『クリア』してから書き直してね！")
+                                else:
+                                    s_p, msg = get_kanji_score(
+                                        cv_res, char, stroke_setting
+                                    )
+                                    st.session_state[lock_key] = True
+
+                                    # 段階的なスコアアップとヒントの切り替え
+                                    if s_p == 100:
                                         st.session_state.kj_scores[i] = 100
-                                    elif s_p >= 60:
-                                        st.session_state.kj_scores[i] = (
-                                            66
-                                            if st.session_state.kj_scores[i] == 0
-                                            else 100
-                                        )
-                                    else:
-                                        st.session_state.kj_scores[i] = (
-                                            34
-                                            if st.session_state.kj_scores[i] == 0
-                                            else (
-                                                66
-                                                if st.session_state.kj_scores[i] == 34
-                                                else 100
+                                        st.session_state[hint_key] = "完璧！記憶完了💮"
+                                        queue_sound("correct.mp3")
+                                        st.rerun()
+                                    elif s_p > 0:
+                                        queue_sound("correct.mp3")
+                                        if score_val == 0:
+                                            st.session_state.kj_scores[i] = 34
+                                            st.session_state[hint_key] = (
+                                                "次は薄い影をたよりに、パーツの配置を思い出して！"
                                             )
-                                        )
-                                    st.session_state[f"reset_{idx}_{i}"] = r_key + 1
-                                    st.rerun()
-                                elif s_p == 0:
-                                    queue_sound("wrong.mp3")
-                                    st.error("形が違うよ")
+                                        elif score_val == 34:
+                                            st.session_state.kj_scores[i] = 66
+                                            st.session_state[hint_key] = (
+                                                "最後は真っ白な状態から。自分の記憶を信じて！"
+                                            )
+                                        elif score_val == 66:
+                                            st.session_state.kj_scores[i] = 100
+                                        st.rerun()
+                                    else:
+                                        st.session_state[hint_key] = msg
+                                        queue_sound("wrong.mp3")
+                                        st.rerun()
+
                             if b2.button(
-                                "🧽消去",
+                                "🧽 クリア",
                                 key=f"clr_{idx}_{i}",
                                 use_container_width=True,
                             ):
                                 st.session_state[f"reset_{idx}_{i}"] = r_key + 1
+                                st.session_state[lock_key] = False
                                 st.rerun()
+
+                            st.markdown(
+                                f"""
+                                <div style="background-color: #f0f7ff; border-left: 5px solid #007bff; padding: 10px; margin-top: 10px; border-radius: 4px; font-size: 13px; color: #333; min-height: 55px;">
+                                    <strong>💡 ヒント:</strong><br>{st.session_state[hint_key]}
+                                </div>
+                                """,
+                                unsafe_allow_html=True,
+                            )
                         else:
-                            st.success("Mastered!")
-
-            c_skp_kj, c_nxt_kj = st.columns(2)
-            is_all = all(s >= 100 for s in st.session_state.kj_scores.values())
-
-            # --- スキップボタン ---
-            if c_skp_kj.button("問題をスキップ ⏩", use_container_width=True):
-                st.session_state.index += 1
-                st.session_state.session_results.append(
-                    {"q": q["q"], "cat": cat, "correct": False}
-                )
-
-                # 🚩 【重要】次の問題のためにシャッターを閉め、データを掃除する
-                st.session_state.show_options = False
-                st.session_state.correct_cache = []
-                st.session_state.kj_scores = {}  # 漢字の点数もリセット
-                st.session_state.show_result = False
-
-                st.rerun()
-
-            # --- 次の問題へボタン ---
-            if c_nxt_kj.button(
-                "次の問題へ ➡️",
-                use_container_width=True,
-                type="primary",
-                disabled=not is_all,
-            ):
-                st.session_state.index += 1
-                st.session_state.correct_count += 1
-                st.session_state.session_results.append(
-                    {"q": q["q"], "cat": cat, "correct": True}
-                )
-
-                # 🚩 【重要】ここでも掃除を徹底する
-                st.session_state.show_options = False
-                st.session_state.correct_cache = []
-                st.session_state.kj_scores = {}
-                st.session_state.show_result = False
-
-                st.rerun()
+                            st.success("OK! 記憶完了")
 
         else:
-            # -----------------------------------------------------
-            # 📝 一般教科 ＆ 並べ替え
-            # -----------------------------------------------------
-            # 🚩 1. 現在の問題データを取得（常に最新の index に基づく）
-            q = qs[idx]
-            ans_raw = str(q.get("a", "")).strip()
-            cat = q.get("orig_cat", "共通")
+            # --- 🍎 漢字以外の全カテゴリ：1行集約・教科書体・密着レイアウト ---
+            import re
+            import random
 
-            # レイアウトCSS
+            ans_raw_str = str(ans_raw)
+            q_text = str(q.get("q", ""))
+            cat_name = str(cat)
+            is_english = "英語" in cat_name  # エラー防止用
+            help_text = q.get("h", "")
+
+            # 🌟 0. デザイン設定（教科書体・トグルの改行禁止）
             st.markdown(
-                r"""<style>
-                [data-testid="stMain"] .block-container { padding-top: 5.0rem !important; } 
-                [data-testid="stMain"] [data-testid="stVerticalBlock"] > div { margin-top: -4px !important; } 
-                </style>""",
+                """
+                <style>
+                @import url('https://fonts.googleapis.com/css2?family=Noto+Serif+JP:wght@700&display=swap');
+                .block-container { 
+                    padding-top: 3.5rem !important; 
+                    font-family: "Noto Serif JP", "Yu Mincho", "serif" !important;
+                }
+                /* トグルの文字を横1行に固定 */
+                div[data-testid="stWidgetLabel"] p {
+                    font-size: 14px !important;
+                    font-weight: bold !important;
+                    white-space: nowrap !important;
+                    margin-bottom: 0px !important;
+                    padding-right: 5px !important;
+                }
+                /* スイッチ本体を少し下に下げる */
+                div[data-testid="stCheckbox"] {
+                    margin-top: 8px !important;
+                }
+                canvas.stCanvas { border: 1px solid #ddd !important; border-radius: 4px !important; }
+                </style>
+                """,
                 unsafe_allow_html=True,
             )
 
-            # 並べ替えかどうかの判定（その場で行う）
-            en_disp, jp_disp, choices_q = parse_order_question(q["q"], cat)
-            is_order = (
-                "英語" in cat
-                and (len(choices_q) > 0 or "/" in ans_raw or " " in ans_raw)
-            ) or ("/" in ans_raw)
+            # 📊 1. ステータス・トグル・ヒント内容（X軸・Y軸を追い込む）
+            # 【A】比率を [2.2, 1.0, 6.8] にして枠を左に寄せます
+            st_col1, st_col2, st_col3 = st.columns([2.2, 1.0, 6.8])
 
-            # 1. Mission表示
-            st.caption(
-                f"Mission {idx + 1}/{len(qs)} | ⭕️ {st.session_state.correct_count}"
-            )
-
-            # 2. 問題文
-            st.markdown(
-                f"<div style='font-size: 24px; font-weight: bold; margin: 5px 0 5px 0;'>{en_disp}</div>",
-                unsafe_allow_html=True,
-            )
-            if jp_disp:
+            with st_col1:
+                status_line = f"Mission {st.session_state.index + 1}/{len(st.session_state.questions)} | ⭕️ {st.session_state.correct_count} | 🏷️ {cat}"
+                # 【C】padding-top を 12px にしてトグルの中心と高さを合わせる
                 st.markdown(
-                    f"<div style='font-size: 18px; color: #555; margin: 0 0 10px 0;'>{jp_disp}</div>",
+                    f"<div style='padding-top: 12px; font-weight: bold; color: #4b5563; font-size: 15px; white-space: nowrap;'>{status_line}</div>",
                     unsafe_allow_html=True,
                 )
 
-            # 💡 3. ヒント表示エリア
-            hint_t = q.get("h", "")
-            if hint_t and str(hint_t).strip():
-                h_col1, h_col2 = st.columns([1, 10])
-                with h_col1:
-                    show_hint = st.toggle("💡", value=False, key=f"hint_toggle_{idx}")
-                with h_col2:
-                    if show_hint:
-                        st.markdown(
-                            f"""<div style="background-color: #e7f4f9; color: #0c5460; border-left: 4px solid #007bff; padding: 8px 12px; border-radius: 4px; font-size: 14px; line-height: 1.4; margin-top: 5px;">{hint_t}</div>""",
-                            unsafe_allow_html=True,
-                        )
+            with st_col2:
+                # 🔘 スイッチ本体のみ
+                # ※位置の微調整は上部のCSS（div:nth-child(2)）で行います
+                is_help_on = st.toggle(
+                    "",
+                    value=st.session_state.get("show_help_persistence", False),
+                    key=f"help_tg_{idx}",
+                    label_visibility="collapsed",
+                )
+                st.session_state.show_help_persistence = is_help_on
 
-            # 隙間
+            with st_col3:
+                # 📝 「ヒントの文字」と「➡ 内容」をここで一括管理
+                # margin-left でスイッチとの距離を自由に調整（例: -40px）
+                hint_label = "💡ヒント"
+                clean_help = (
+                    str(help_text)
+                    .replace("$$", "")
+                    .replace(r"\text{", "")
+                    .replace("}", "")
+                    if help_text
+                    else ""
+                )
+
+                # 表示するテキストの組み立て（ONの時だけ ➡ を出す）
+                display_content = (
+                    f"{hint_label} ➡ {clean_help}"
+                    if (is_help_on and clean_help)
+                    else hint_label
+                )
+
+                st.markdown(
+                    f"""
+                    <div style='
+                        margin-left: -80px; 
+                        line-height: 46px; 
+                        font-weight: bold; 
+                        color: #1f2937; 
+                        font-size: 14px; 
+                        white-space: nowrap;
+                    '>
+                        {display_content}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            st.write("</div>", unsafe_allow_html=True)  # コンテナ終了
+
+            # --- 📖 2. 問題表示 ---
+            st.markdown(f"### {en_disp}")
+            if jp_disp:
+                st.markdown(f"**{jp_disp}**")
+
+            # --- 3. キャンバス（標準設定） ---
+            # ここで session_state を安全に取得します
+            curr_w = st.session_state.get("stroke_width", 3)
+            curr_c = st.session_state.get("stroke_color", "#000000")
+
+            canvas_result = st_canvas(
+                fill_color="rgba(255, 165, 0, 0.3)",
+                stroke_width=curr_w,
+                stroke_color=curr_c,
+                height=300,
+                width=800,
+                drawing_mode="freedraw",
+                key=f"math_cv_{idx}",
+                display_toolbar=True,  # 戻る・進む・ゴミ箱を表示
+                update_streamlit=True,
+            )
+
+            # --- 4. ペン・消しゴムボタン（キャンバスの「下」に確実に並べる） ---
+            # --- 🎨 この場所のボタンだけを狙い撃ち（Ruffエラー修正版） ---
+            # 1. まず「今どっちか」を判定
+            curr_c = st.session_state.get("stroke_color", "#000000")
+            p_type = "primary" if curr_c == "#000000" else "secondary"
+            e_type = "primary" if curr_c == "#ffffff" else "secondary"
+
+            # 2. fを外して普通の文字列にする（これでF541エラーが消えます）
+            # CSSの波括弧も {{ }} から { } に戻して「びしっと」させます
             st.markdown(
-                "<div style='display: block; height: 20px;'></div>",
+                """
+                <style>
+                /* keyが "tool_btn_" で始まるボタン（今回追加分）だけを正方形にする */
+                button[key*="tool_btn_"] {
+                    width: 34px !important;
+                    height: 34px !important;
+                    min-width: 34px !important;
+                    padding: 0 !important;
+                    border-radius: 4px !important;
+                }
+                /* このボタンが入っている行だけをゴミ箱の横に持ち上げる */
+                div[data-testid="stHorizontalBlock"]:has(button[key*="tool_btn_"]) {
+                    margin-top: -46px !important;
+                }
+                </style>
+            """,
                 unsafe_allow_html=True,
             )
 
-            # 4. キャンバスエリア（常に表示）
-            with st.container(border=True):
-                canvas_h = 200 if is_order else (450 if "数学" in cat else 350)
-                tool_now = st.session_state.get(f"tl_{idx}", "🖋️")
-                p_c, p_w = ("#000000", 5) if tool_now == "🖋️" else ("#f8f9fb", 35)
-                st_canvas(
-                    stroke_width=p_w,
-                    stroke_color=p_c,
-                    height=canvas_h,
-                    width=1100,
-                    key=f"cv_{idx}",
-                    background_color="#f8f9fb",
-                    display_toolbar=True,
-                )
-                c_tl, _ = st.columns([1, 4])
-                with c_tl:
-                    st.radio(
-                        "T",
-                        ["🖋️", "🧽"],
-                        horizontal=True,
-                        label_visibility="collapsed",
-                        key=f"tl_{idx}",
-                    )
+            # 3. 配置（ゴミ箱の横に潜り込ませる）
+            t_c_space, t_c_pen, t_c_era, _ = st.columns([1.1, 0.5, 0.5, 7.9])
 
-            # -----------------------------------------------------
-            # 🚩 5. 判定 ＆ オプション表示フェーズ（ここがバグの急所）
-            # -----------------------------------------------------
-            if st.session_state.show_result:
-                # 結果表示
+            with t_c_pen:
+                if st.button("✏️", key=f"tool_btn_p_{idx}", type=p_type):
+                    st.session_state.stroke_color = "#000000"
+                    st.session_state.stroke_width = 3
+                    st.rerun()
+
+            with t_c_era:
+                if st.button("🧼", key=f"tool_btn_e_{idx}", type=e_type):
+                    st.session_state.stroke_color = "#ffffff"
+                    st.session_state.stroke_width = 30
+                    st.rerun()
+
+            # --- 📝 4. 解答・結果表示エリア ---
+            if st.session_state.get("show_result"):
+                display_ans = str(ans_raw).replace("/", " ").replace(" ,", ",").strip()
                 if st.session_state.last_is_correct:
-                    st.success(f"SUCCESS: {ans_raw}")
+                    st.success(f"⭕️ 正解: {display_ans}")
                 else:
-                    st.error(f"FAILURE: {ans_raw}")
+                    st.error(f"❌ 不正解: {display_ans}")
 
-                c_redo, c_next = st.columns(2)
-                if c_redo.button(
-                    "答えを見たので解き直す",
-                    use_container_width=True,
-                    key=f"redo_{idx}",
+                res_c = st.columns(2)
+                if res_c[0].button(
+                    "🔄 もう一度", use_container_width=True, key=f"re_{idx}"
                 ):
                     st.session_state.show_result = False
-                    st.session_state.show_options = True
                     st.session_state["user_ans_order"] = []
-                    # 💡 解き直しの時も選択肢をリセット
                     st.session_state.current_opts = []
                     st.rerun()
-                if c_next.button(
+                if res_c[1].button(
                     "次へ進む ➡️",
-                    use_container_width=True,
                     type="primary",
-                    key=f"next_{idx}",
+                    use_container_width=True,
+                    key=f"nf_{idx}",
                 ):
                     st.session_state.index += 1
                     st.session_state.show_result = False
                     st.session_state.show_options = False
-                    # 💡 次の問題のために全てのキャッシュを空にする
-                    st.session_state.current_opts = []
                     st.session_state["user_ans_order"] = []
-                    st.session_state["correct_cache"] = []
+                    st.session_state.current_opts = []
                     st.rerun()
 
-            elif st.session_state.get("show_options"):
-                # 🌟 オプション表示中（英語の選択肢などがここに出る）
-                if is_order:
-                    # --- 並べ替え問題のロジック ---
+            else:
+                # 【解答UI判定】（以前のロジックを継承し、改行を整理）
+                match_slash_in_q = re.search(r"\(([^)]*/[^)]*)\)", q_text)
+                empty_parens = re.findall(r"\(\s*\)", q_text)
+                is_scramble_render = (
+                    is_english
+                    and is_order
+                    and (match_slash_in_q or len(empty_parens) >= 2)
+                )
+
+                if is_scramble_render:
                     if "user_ans_order" not in st.session_state:
                         st.session_state["user_ans_order"] = []
-
-                    # 🚩 ここで現在の問題の正解を作る（英語が国語に混ざらないように上書き）
-                    ans_parts = [w.strip() for w in ans_raw.split("/") if w.strip()]
-                    st.session_state["correct_cache"] = ans_parts
-
-                    if not st.session_state.get("current_opts"):
-                        # パーツがなければ作る
-                        st.session_state.current_opts = (
-                            choices_q if choices_q else ans_parts.copy()
-                        )
-                        random.shuffle(st.session_state.current_opts)
-
+                    current_ans = st.session_state["user_ans_order"]
                     st.info(
-                        f"Answer: {' '.join(st.session_state.get('user_ans_order', []))}"
+                        f"解答組み立て: {' '.join(current_ans) if current_ans else '(単語を選択)'}"
                     )
 
-                    # 選択肢ボタンの表示
+                    if match_slash_in_q:
+                        parts = [
+                            w.strip()
+                            for w in match_slash_in_q.group(1).split("/")
+                            if w.strip()
+                        ]
+                    elif len(empty_parens) >= 2:
+                        parts = [
+                            w.strip()
+                            for w in ans_raw_str.replace("/", " ").split()
+                            if w.strip()
+                        ]
+                    else:
+                        parts = [w.strip() for w in ans_raw_str.split("/") if w.strip()]
+
+                    if not st.session_state.get("current_opts") or set(
+                        st.session_state.get("current_opts", [])
+                    ) != set(parts):
+                        display_opts = list(parts)
+                        random.shuffle(display_opts)
+                        st.session_state.current_opts = display_opts
+
                     opts = st.session_state.current_opts
-                    MAX_COLS = 8
-                    for i in range(0, len(opts), MAX_COLS):
-                        cols = st.columns(MAX_COLS)
-                        for j, word in enumerate(opts[i : i + MAX_COLS]):
-                            idx_o = i + j
-                            needed = st.session_state["correct_cache"].count(word)
-                            user_h = st.session_state["user_ans_order"].count(word)
-                            if user_h < (needed if needed > 0 else 1):
+                    for i in range(0, len(opts), 8):
+                        cols = st.columns(8)
+                        for j, word in enumerate(opts[i : i + 8]):
+                            if current_ans.count(word) < opts.count(word):
                                 if cols[j].button(
                                     word,
-                                    key=f"wbtn_{idx}_{idx_o}",
+                                    key=f"b_{idx}_{i + j}",
                                     use_container_width=True,
                                 ):
                                     st.session_state["user_ans_order"].append(word)
                                     st.rerun()
 
-                    c_judge, c_undo, c_skip = st.columns([2, 1, 1])
-                    if len(st.session_state["user_ans_order"]) >= len(
-                        st.session_state["correct_cache"]
+                    c = st.columns([1, 1, 2])
+                    if c[0].button(
+                        "🔄 最初から", key=f"clr_{idx}", use_container_width=True
                     ):
-                        if c_judge.button(
-                            "✅ 正解か確認する",
-                            use_container_width=True,
-                            type="primary",
-                        ):
-                            u_cl = (
-                                "".join(st.session_state["user_ans_order"])
-                                .lower()
-                                .replace(" ", "")
-                                .strip(".?!")
-                            )
-                            c_cl = ans_raw.lower().replace(" ", "").strip(".?!")
-                            ok = u_cl == c_cl
-                            queue_sound("correct.mp3" if ok else "wrong.mp3")
-                            st.session_state.last_is_correct = ok
-                            if ok:
-                                st.session_state.correct_count += 1
-                            st.session_state.session_results.append(
-                                {"q": q["q"], "cat": cat, "correct": ok}
-                            )
-                            st.session_state.show_result = True
-                            st.rerun()
-                    else:
-                        c_judge.button(
-                            "⏳ すべて選択してください",
-                            disabled=True,
-                            use_container_width=True,
-                        )
-
-                    if c_undo.button("⬅️ 戻す", use_container_width=True):
-                        if st.session_state["user_ans_order"]:
-                            st.session_state["user_ans_order"].pop()
-                        st.rerun()
-                    if c_skip.button("⏩ スキップ", use_container_width=True):
-                        st.session_state.index += 1
-                        st.session_state.show_options = False
-                        st.session_state.current_opts = []
                         st.session_state["user_ans_order"] = []
                         st.rerun()
+                    if c[1].button("⬅️ 戻す", key=f"ud_{idx}", use_container_width=True):
+                        if current_ans:
+                            st.session_state["user_ans_order"].pop()
+                            st.rerun()
+                    if c[2].button(
+                        "✅ 確定",
+                        type="primary",
+                        key=f"fix_{idx}",
+                        use_container_width=True,
+                    ):
 
+                        def clean(v):
+                            return re.sub(
+                                r"[ ,.\?!\(\)/]",
+                                "",
+                                "".join(v) if isinstance(v, list) else str(v),
+                            ).lower()
+
+                        ok = clean(current_ans) == clean(ans_raw_str)
+                        st.session_state.last_is_correct = ok
+                        st.session_state.show_result = True
+                        if ok:
+                            st.session_state.correct_count += 1
+                        st.session_state.session_results.append(
+                            {"q": q["q"], "cat": cat, "correct": ok}
+                        )
+                        queue_sound("correct.mp3" if ok else "wrong.mp3")
+                        st.rerun()
                 else:
-                    # --- 通常の4択問題 ---
-                    if not st.session_state.get("current_opts"):
-                        opts = [ans_raw]
-                        d_v = str(q.get("dummy", "")).strip()
-                        if d_v:
-                            opts.extend(
-                                [
-                                    x.strip()
-                                    for x in re.split(r"[,/、]", d_v)
-                                    if x.strip()
-                                ]
-                            )
-                        if len(opts) < 4:
-                            cands = [
-                                str(x["a"])
-                                for x in all_q.get(cat, [])
-                                if str(x["a"]) != ans_raw
-                            ]
-                            random.shuffle(cands)
-                            opts.extend(cands)
-                        opts = list(dict.fromkeys(opts))[:4]
-                        random.shuffle(opts)
-                        st.session_state.current_opts = opts
-
-                    o_cols = st.columns(len(st.session_state.current_opts))
-                    for i, o in enumerate(st.session_state.current_opts):
-                        if o_cols[i].button(
-                            str(o), key=f"opt_{idx}_{i}", use_container_width=True
+                    if not st.session_state.get("show_options"):
+                        if st.button(
+                            "🤔 答えをイメージしてからクリック！",
+                            key=f"bm_{idx}",
+                            use_container_width=True,
                         ):
-                            ok = str(o).lower() == ans_raw.lower()
-                            queue_sound("correct.mp3" if ok else "wrong.mp3")
-                            st.session_state.last_is_correct = ok
-                            if ok:
-                                st.session_state.correct_count += 1
-                            st.session_state.session_results.append(
-                                {"q": q["q"], "cat": cat, "correct": ok}
-                            )
-                            st.session_state.show_result = True
+                            st.session_state.show_options = True
+                            st.rerun()
+                    else:
+                        st.write("▼ 正しいものを1つ選んでください")
+                        correct_val = ans_raw_str.split("/")[0].strip()
+                        dummy_raw = str(q.get("dummy", ""))
+                        all_dummies = [
+                            d.strip()
+                            for d in re.split(r"[,、]", dummy_raw)
+                            if d.strip() and d != correct_val
+                        ]
+                        selected_dummies = random.sample(
+                            all_dummies, min(len(all_dummies), 3)
+                        )
+                        four_choice = [correct_val] + selected_dummies
+                        if not st.session_state.get("current_opts") or set(
+                            st.session_state.get("current_opts", [])
+                        ) != set(four_choice):
+                            display_opts = list(four_choice)
+                            random.shuffle(display_opts)
+                            st.session_state.current_opts = display_opts
+
+                        opts = st.session_state.current_opts
+                        cols = st.columns(len(opts))
+                        for j, word in enumerate(opts):
+                            if cols[j].button(
+                                word, key=f"opt_{idx}_{j}", use_container_width=True
+                            ):
+
+                                def clean_s(t):
+                                    return re.sub(r"[ ,.\?!\(\)/]", "", str(t)).lower()
+
+                                ok = clean_s(word) == clean_s(correct_val)
+                                st.session_state.last_is_correct = ok
+                                st.session_state.show_result = True
+                                if ok:
+                                    st.session_state.correct_count += 1
+                                st.session_state.session_results.append(
+                                    {"q": q["q"], "cat": cat, "correct": ok}
+                                )
+                                queue_sound("correct.mp3" if ok else "wrong.mp3")
+                                st.rerun()
+                        if st.button(
+                            "🙈 隠す", key=f"btn_hide_{idx}", use_container_width=True
+                        ):
+                            st.session_state.show_options = False
                             st.rerun()
 
-            else:
-                # 🚩 【マスク：ここがスタート】
-                c_jd_gen, c_sk_gen = st.columns(2)
-                # 💡 このボタンを押した瞬間に、今の問題（index）に合わせて選択肢を生成するよう強制します
-                if c_jd_gen.button(
-                    "判定 ＆ オプション表示", use_container_width=True, type="primary"
-                ):
-                    st.session_state.current_opts = []  # 前の残骸を消す
+        # 🚩 5. ナビゲーション
+        st.write("")
+        n_col = st.columns(3)
+        with n_col[0]:
+            target_id = q.get("id")
+            if st.button("🗑️ 削除実行", key=f"nd_{idx}", use_container_width=True):
+                if target_id and len(str(target_id)) > 5:
+                    with st.spinner("削除中..."):
+                        if delete_question_by_id(target_id):
+                            st.session_state.questions.pop(idx)
+                            if st.session_state.index >= len(
+                                st.session_state.questions
+                            ):
+                                st.session_state.index = max(
+                                    0, len(st.session_state.questions) - 1
+                                )
+                            st.success("✅ 削除成功")
+                            st.cache_data.clear()
+                            time.sleep(0.5)
+                            st.rerun()
+                        else:
+                            st.error("❌ 失敗: IDが見つかりません。")
+                else:
+                    st.warning("⚠️ IDがないため削除できません。")
+            st.caption(f"🆔 ID: '{target_id}'")
+
+        with n_col[1]:
+            if st.button("⬅️ 前へ", key=f"np_{idx}", use_container_width=True):
+                if st.session_state.index > 0:
+                    st.session_state.index -= 1
+                    st.session_state.show_result = False
+                    st.session_state.show_options = False
                     st.session_state["user_ans_order"] = []
-                    st.session_state.show_options = True
-                    st.rerun()
-                if c_sk_gen.button("この問題をスキップ ⏩", use_container_width=True):
-                    st.session_state.index += 1
                     st.session_state.current_opts = []
                     st.rerun()
 
+        with n_col[2]:
+            if st.button("⏭️ 次へ", key=f"ns_{idx}", use_container_width=True):
+                st.session_state.index += 1
+                st.session_state.show_result = False
+                st.session_state.show_options = False
+                st.session_state["user_ans_order"] = []
+                st.session_state.current_opts = []
+                st.rerun()
+
+# 🔊 音声再生
 execute_queued_sound()
