@@ -2211,54 +2211,18 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                 unsafe_allow_html=True,
             )
 
-            # --- クイズ本体エリア ---
-            # --- クイズ本体エリア ---
+            # --- 📝 5. クイズ表示 & 🚩 6. 操作ボタン ---
             if st.session_state.get("show_result"):
-                # ⭕️❌ 判定表示
+                # ⭕️❌ 判定表示（1行・強調版）
                 display_ans = ans_raw_str.replace("/", " ").replace(" ,", ",").strip()
-
                 if st.session_state.last_is_correct:
-                    # 🟢 正解の場合
                     st.markdown(
-                        f"""
-                        <div style="
-                            background-color: #d4edda;
-                            color: #155724;
-                            padding: 10px 15px;
-                            border-radius: 8px;
-                            border-left: 6px solid #28a745;
-                            display: flex;
-                            align-items: baseline;
-                            flex-wrap: wrap;
-                            gap: 10px;
-                            margin-bottom: 10px;
-                        ">
-                            <span style='font-size: 1.1rem; font-weight: bold; white-space: nowrap;'>⭕️ 正解！</span> 
-                            <span style='font-size: 1.6rem; font-weight: 800; line-height: 1.1;'>{display_ans}</span>
-                        </div>
-                    """,
+                        f"""<div style="background-color: #d4edda; color: #155724; padding: 10px 15px; border-radius: 8px; border-left: 6px solid #28a745; display: flex; align-items: baseline; flex-wrap: wrap; gap: 10px; margin-bottom: 10px;"><span style='font-size: 1.1rem; font-weight: bold; white-space: nowrap;'>⭕️ 正解！</span><span style='font-size: 1.6rem; font-weight: 800; line-height: 1.1;'>{display_ans}</span></div>""",
                         unsafe_allow_html=True,
                     )
                 else:
-                    # 🔴 不正解の場合
                     st.markdown(
-                        f"""
-                        <div style="
-                            background-color: #f8d7da;
-                            color: #721c24;
-                            padding: 10px 15px;
-                            border-radius: 8px;
-                            border-left: 6px solid #dc3545;
-                            display: flex;
-                            align-items: baseline;
-                            flex-wrap: wrap;
-                            gap: 10px;
-                            margin-bottom: 10px;
-                        ">
-                            <span style='font-size: 1.1rem; font-weight: bold; white-space: nowrap;'>❌ 不正解！正解は：</span> 
-                            <span style='font-size: 1.6rem; font-weight: 800; line-height: 1.1;'>{display_ans}</span>
-                        </div>
-                    """,
+                        f"""<div style="background-color: #f8d7da; color: #721c24; padding: 10px 15px; border-radius: 8px; border-left: 6px solid #dc3545; display: flex; align-items: baseline; flex-wrap: wrap; gap: 10px; margin-bottom: 10px;"><span style='font-size: 1.1rem; font-weight: bold; white-space: nowrap;'>❌ 不正解！正解は：</span><span style='font-size: 1.6rem; font-weight: 800; line-height: 1.1;'>{display_ans}</span></div>""",
                         unsafe_allow_html=True,
                     )
             else:
@@ -2276,7 +2240,9 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                 )
                 is_two_choice = not is_scramble_render and option_count == 2
 
+                # --- クイズ表示ロジック ---
                 if is_scramble_render:
+                    # --- [A] 並び替えクイズ (1行8つ対応) ---
                     if "user_ans_order" not in st.session_state:
                         st.session_state["user_ans_order"] = []
                     user_ans = st.session_state["user_ans_order"]
@@ -2299,9 +2265,9 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                         st.session_state.current_opts = display_opts
 
                     opts = st.session_state.current_opts
-                    for i in range(0, len(opts), 4):
-                        cols = st.columns(4)
-                        for j, word in enumerate(opts[i : i + 4]):
+                    for i in range(0, len(opts), 8):
+                        cols = st.columns(8)  # ★ 1行に8つ並べる
+                        for j, word in enumerate(opts[i : i + 8]):
                             if user_ans.count(word) < opts.count(word):
                                 if cols[j].button(
                                     word,
@@ -2312,8 +2278,9 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                                     st.rerun()
 
                 elif is_two_choice:
+                    # --- [B] 2択クイズ ---
                     st.write("▼ 正解を選択")
-                    cols = st.columns(len(clean_options))
+                    cols = st.columns(8)  # レイアウト維持のため8列枠を使用
                     for j, word in enumerate(clean_options):
                         if cols[j].button(
                             word, key=f"t2_{idx}_{j}", use_container_width=True
@@ -2330,9 +2297,13 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                             queue_sound("correct.mp3" if ok else "wrong.mp3")
                             st.rerun()
                 else:
+                    # --- [C] 単語4択クイズ (マスク機能付き) ---
                     if not st.session_state.get("show_options"):
                         if st.button(
-                            "答えを表示する", key=f"sh_{idx}", use_container_width=True
+                            "答えを表示する",
+                            key=f"sh_{idx}",
+                            use_container_width=True,
+                            type="secondary",
                         ):
                             st.session_state.show_options = True
                             st.rerun()
@@ -2348,6 +2319,7 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                             all_dummies, min(len(all_dummies), 3)
                         )
                         opts_list = [correct_val] + selected_dummies
+
                         if not st.session_state.get("current_opts") or set(
                             st.session_state.get("current_opts", [])
                         ) != set(opts_list):
@@ -2355,7 +2327,7 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                             random.shuffle(display_opts)
                             st.session_state.current_opts = display_opts
 
-                        cols = st.columns(len(st.session_state.current_opts))
+                        cols = st.columns(8)  # ★ 1行8列の枠でボタンを配置
                         for j, word in enumerate(st.session_state.current_opts):
                             if cols[j].button(
                                 word, key=f"f4_{idx}_{j}", use_container_width=True
@@ -2375,30 +2347,30 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                                 queue_sound("correct.mp3" if ok else "wrong.mp3")
                                 st.rerun()
 
-            # --- 操作ボタン ---
+            # --- 下部ナビゲーション ---
             target_id = q.get("id", "不明")
             st.markdown("---")
-
             n_col = st.columns([0.5, 1.0, 1.0, 0.2, 1.1, 1.1, 0.2, 2.0])
+
+            # 状態をリセットして移動する関数
+            def go_to_index(new_idx):
+                st.session_state.index = new_idx
+                st.session_state.show_result = False
+                st.session_state.show_options = False  # 💡 ここでマスクをリセット
+                st.session_state["user_ans_order"] = []
+                st.session_state.current_opts = []
+                st.rerun()
 
             with n_col[0]:
                 if st.button("🗑️", key=f"nv_d_{idx}"):
                     st.session_state.confirm_delete = True
-
             with n_col[1]:
                 if st.button("前へ", key=f"nv_p_{idx}", use_container_width=True):
                     if st.session_state.index > 0:
-                        st.session_state.index -= 1
-                        st.session_state.show_result = False
-                        st.session_state["user_ans_order"] = []
-                        st.rerun()
-
+                        go_to_index(st.session_state.index - 1)
             with n_col[2]:
                 if st.button("スキップ", key=f"nv_s_{idx}", use_container_width=True):
-                    st.session_state.index += 1
-                    st.session_state.show_result = False
-                    st.session_state["user_ans_order"] = []
-                    st.rerun()
+                    go_to_index(st.session_state.index + 1)
 
             with n_col[4]:
                 if st.button(
@@ -2410,7 +2382,6 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                     if st.session_state.get("user_ans_order"):
                         st.session_state["user_ans_order"].pop()
                         st.rerun()
-
             with n_col[5]:
                 if st.button(
                     "全部消す",
@@ -2455,6 +2426,7 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                             "もう一度", key=f"nv_re_{idx}", use_container_width=True
                         ):
                             st.session_state.show_result = False
+                            st.session_state.show_options = False  # リセット
                             st.session_state["user_ans_order"] = []
                             st.session_state.current_opts = []
                             st.rerun()
@@ -2465,12 +2437,7 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                             key=f"nv_next_{idx}",
                             use_container_width=True,
                         ):
-                            st.session_state.index += 1
-                            st.session_state.show_result = False
-                            st.session_state.show_options = False
-                            st.session_state["user_ans_order"] = []
-                            st.session_state.current_opts = []
-                            st.rerun()
+                            go_to_index(st.session_state.index + 1)
 
             st.caption(f"ID: {target_id}")
 
