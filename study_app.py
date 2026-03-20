@@ -1636,7 +1636,7 @@ if not st.session_state.mode:
                         if is_new:
                             # ✨ 作った直後：青色（Info）で「未実施」を表現
                             st.info(
-                                f"🆕 NEW MISSION：未実施の新しい課題です。挑戦しよう！"
+                                "🆕 NEW MISSION：未実施の新しい課題です。挑戦しよう！"
                             )
 
                         elif score_num == 100:
