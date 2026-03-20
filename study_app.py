@@ -2081,48 +2081,62 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                 update_streamlit=True,
             )
 
-            # --- 4. ペン・消しゴムボタン（キャンバスの「下」に確実に並べる） ---
-            # --- 🎨 この場所のボタンだけを狙い撃ち（Ruffエラー修正版） ---
-            # 1. まず「今どっちか」を判定
-            curr_c = st.session_state.get("stroke_color", "#000000")
-            p_type = "primary" if curr_c == "#000000" else "secondary"
-            e_type = "primary" if curr_c == "#ffffff" else "secondary"
+            # --- 🎨 4. ツール切り替え（ラジオボタンをゴミ箱の横にワープさせる） ---
 
-            # 2. fを外して普通の文字列にする（これでF541エラーが消えます）
-            # CSSの波括弧も {{ }} から { } に戻して「びしっと」させます
+            # 💡 【CSS】この場所専用の「目印（marker）」を置いて、次の行だけを狙い撃ちします
+            # --- 🎨 ラジオボタンを「ゴミ箱」の横に強制ワープさせる ---
+
+            # ① この場所専用のCSS（ラジオボタンを狙い撃ちします）
             st.markdown(
                 """
                 <style>
-                /* keyが "tool_btn_" で始まるボタン（今回追加分）だけを正方形にする */
-                button[key*="tool_btn_"] {
-                    width: 34px !important;
-                    height: 34px !important;
-                    min-width: 34px !important;
-                    padding: 0 !important;
-                    border-radius: 4px !important;
+                /* ① ラジオボタン自体のワープ設定（これはそのまま） */
+                div[data-testid="stRadio"] {
+                    transform: translateY(-68px) !important;
+                    margin-left: 140px !important;
+                    z-index: 1000 !important;
                 }
-                /* このボタンが入っている行だけをゴミ箱の横に持ち上げる */
-                div[data-testid="stHorizontalBlock"]:has(button[key*="tool_btn_"]) {
-                    margin-top: -46px !important;
+
+                /* 🌟 ② 【ここが決め手】ラジオボタンを抱えている「行」の箱を強制的に潰す */
+                div[data-testid="stHorizontalBlock"]:has(div[data-testid="stRadio"]) {
+                    height: 0px !important;       /* 箱の高さを 0 にする */
+                    min-height: 0px !important;   /* 最低限の高さも 0 にする */
+                    margin-bottom: -100px !important; /* 💡 下の解答欄をどれくらい引き寄せるか */
+                }
+
+                /* その他、見た目をスッキリさせる設定 */
+                div[data-testid="stRadio"] > label { display: none !important; }
+                div[data-testid="stRadio"] div[role="radiogroup"] { 
+                    flex-direction: row !important;
+                    gap: 15px !important;
                 }
                 </style>
             """,
                 unsafe_allow_html=True,
             )
 
-            # 3. 配置（ゴミ箱の横に潜り込ませる）
-            t_c_space, t_c_pen, t_c_era, _ = st.columns([1.1, 0.5, 0.5, 7.9])
+            # ② ラジオボタン本体
+            # カラムで場所を確保（比率は適当でOK。上のCSSが位置を決めます）
+            r_col, _ = st.columns([0.5, 0.5])
 
-            with t_c_pen:
-                if st.button("✏️", key=f"tool_btn_p_{idx}", type=p_type):
-                    st.session_state.stroke_color = "#000000"
-                    st.session_state.stroke_width = 3
-                    st.rerun()
+            with r_col:
+                mode = st.radio(
+                    "Tool",
+                    options=["✏️ ペン", "🧼 消ゴム"],
+                    index=0
+                    if st.session_state.get("stroke_color", "#000000") == "#000000"
+                    else 1,
+                    horizontal=True,
+                    key=f"mode_sel_{idx}",
+                )
 
-            with t_c_era:
-                if st.button("🧼", key=f"tool_btn_e_{idx}", type=e_type):
-                    st.session_state.stroke_color = "#ffffff"
-                    st.session_state.stroke_width = 30
+                # 選択が変更されたら反映
+                new_color = "#000000" if "ペン" in mode else "#ffffff"
+                new_width = 3 if "ペン" in mode else 30
+
+                if st.session_state.get("stroke_color") != new_color:
+                    st.session_state.stroke_color = new_color
+                    st.session_state.stroke_width = new_width
                     st.rerun()
 
             # --- 📝 4. 解答・結果表示エリア ---
