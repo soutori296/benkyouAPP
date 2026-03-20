@@ -681,7 +681,6 @@ def get_cooldown_questions(history, cooldown=3):
 def load_db():
     """
     スプレッドシートから全問題をロードし、統計情報を動的に生成します。
-    💡 修正ポイント: スコア1以上で「開拓済み」としてカウントするように変更。
     """
     try:
         creds = get_creds()
@@ -691,43 +690,67 @@ def load_db():
         gc = gspread.authorize(creds)
         ss = gc.open("study_stats_db")
 
-        # --- 1. 全問題（questions）の取得 ---
+        # --- 1. 全問題（questions）の取得と名寄せ ---
         q_rows = ss.worksheet("questions").get_all_records()
 
-        # 💡 [追加] ヘッダーから15列目(O列)の実際の名前を取得します
+        # 🌟 pandasを使用して物理的に重複を排除し、正解を一対一に固定する
+        import pandas as pd
+
+        df_raw = pd.DataFrame(q_rows)
+
+        def normalize_q(text):
+            if not isinstance(text, str):
+                return text
+            text = re.sub(r"^(単語：|英単語：|【英単語】\s*)", "", text)
+            text = re.sub(r"[\s　、。！？!?,.()（）]", "", text)
+            return text
+
+        if not df_raw.empty and "q" in df_raw.columns:
+            # 比較用キーで重複を削り、最初の1行を「絶対の正解」として採用
+            df_raw["q_comparison"] = df_raw["q"].apply(normalize_q)
+            df_raw = df_raw.drop_duplicates(subset=["q_comparison"], keep="first")
+            q_rows = df_raw.to_dict("records")
+
+        # O列(15列目)の実際の名前を取得
         q_sheet = ss.worksheet("questions")
         q_headers = q_sheet.row_values(1)
-        # O列(15番目)の名前を取得（例: "id" や "UUID" など）
         id_col_name = q_headers[14] if len(q_headers) >= 15 else "id"
 
         org_questions = {}
-        cat_total_counts = {}  # 🌟 ここで初期化するのでエラーになりません
+        cat_total_counts = {}
 
         for r in q_rows:
             cat = str(r.get("category", "共通")).strip()
             rank_val = str(r.get("rank", "B")).upper().strip()
 
-            # 💡 [最重要] question_dataの中に "id" を読み込む設定を追加
+            # ダミー案(p_dummy)を優先し、正解(a)と重複していれば除去
+            correct_ans = str(r.get("a", "")).strip()
+            raw_dummy = str(
+                r.get("p_dummy") if r.get("p_dummy") else r.get("dummy", "")
+            )
+            clean_dummies = [
+                d.strip()
+                for d in re.split(r"[,、]", raw_dummy)
+                if d.strip() and d.strip() != correct_ans
+            ]
+
             question_data = {
-                "id": str(r.get(id_col_name, "")).strip(),  # 🌟 O列からIDを確実に取得
+                "id": str(r.get(id_col_name, "")).strip(),
                 "q": str(r.get("q", "")),
-                "a": str(r.get("a", "")),
+                "a": correct_ans,
                 "h": str(r.get("h", "")),
                 "rank": rank_val,
                 "orig_cat": cat,
-                "dummy": str(r.get("dummy", "")),
+                "dummy": ", ".join(clean_dummies),
                 "unit": str(r.get("unit", r.get("sub_category", ""))),
             }
 
-            # 画数データの取得などは維持
             for i in range(1, 11):
                 col_name = f"strokes{i}"
                 if col_name in r:
                     question_data[col_name] = r[col_name]
 
-            # カテゴリ別に問題を格納
             org_questions.setdefault(cat, []).append(question_data)
-            # 📈 各カテゴリの総問題数をカウント
             cat_total_counts[cat] = cat_total_counts.get(cat, 0) + 1
 
         # --- 2. 習熟度（mastery）に基づく統計計算 ---
@@ -735,46 +758,31 @@ def load_db():
         try:
             m_rows = ss.worksheet("mastery").get_all_records()
             for m in m_rows:
-                # 🌟 筋肉質修正: スコア1以上(1回でも正解)なら開拓済みにカウント
-                # さらに、日付があるかどうかのチェックを少し柔軟に
                 score = int(m.get("score", 0))
                 q_text = str(m.get("q", "")).strip()
                 cat_m = str(m.get("category", "共通")).strip()
-
                 if score >= 1 and q_text:
-                    # 既存の統計表にあるカテゴリ名(cat)と一致するかチェック
-                    # 「総合」などで保存されたデータも、元のカテゴリに紐付け
                     conquered_sets.setdefault(cat_m, set()).add(q_text)
-        except Exception as e:
-            st.warning(f"習熟度データの解析中に軽微な問題: {e}")
+        except Exception:
+            pass
 
-        # --- 進捗テーブル（カテゴリ別）の作成 ---
-        # --- 🚩 進捗テーブル（カテゴリ別）の作成 ---
+        # --- 🚩 進捗テーブルの作成 ---
         st_list = []
         total_opened_count = 0
-
-        # 1. データを収集（ここではまだソートしない）
         for cat in cat_total_counts.keys():
             total_in_db = cat_total_counts[cat]
-            # conquered_sets または opened_sets（お使いの変数名に合わせてください）
             done = len(conquered_sets.get(cat, set()))
-
-            # 💡 数値（float）のまま計算する（%は付けない）
             rate = round((done / total_in_db) * 100, 1) if total_in_db > 0 else 0.0
-
             st_list.append(
                 {
                     "カテゴリ": cat,
                     "開拓状況": f"{done} / {total_in_db}",
-                    "🚩 開拓率": rate,  # 💡 ここを数値にするのがポイント
+                    "🚩 開拓率": rate,
                 }
             )
             total_opened_count += done
 
-        # 🚩 2. 開拓率が「低い順」にソート（数値なので 9.0% と 10.0% が正しく並びます）
         st_list.sort(key=lambda x: x["🚩 開拓率"])
-
-        # 🚩 3. 全体平均の計算
         all_total = sum(cat_total_counts.values())
         overall_avg = (
             round((total_opened_count / all_total) * 100, 1) if all_total > 0 else 0
@@ -789,7 +797,6 @@ def load_db():
             ss.worksheet("reports").get_all_records() if "reports" in titles else []
         )
 
-        # 最後にすべてをまとめて返す
         return org_questions, {
             "cat_stats": st_list,
             "overall_avg": overall_avg,
@@ -801,7 +808,7 @@ def load_db():
         return {}, {"cat_stats": [], "overall_avg": 0, "history": [], "reports": []}
 
 
-# 起動時にDBをロード
+# 🌟 この代入行が、サイドバーやメインパネルの UI コードより「上」にあることを確認してください
 all_q, db = load_db()
 
 # =============================================================================
@@ -846,20 +853,20 @@ def init_session():
 
 init_session()
 
-# タイマー：リアルタイム加算（10分以内の活動を記録）
+# タイマー：リアルタイム加算（240秒以内の活動を記録）
 now_ts = time.time()
 elapsed_t = now_ts - st.session_state.last_action_time
 st.session_state.last_action_time = now_ts
 
-if 0 < elapsed_t < 600:
+# --- 活動判定（ローカル）：240秒（4分）以上の放置は加算しない ---
+if 0 < elapsed_t < 240:
     st.session_state.unsynced_seconds += int(elapsed_t)
     st.session_state.daily_seconds += int(elapsed_t)
-    # 総累計時間の表示更新用
     if "total_seconds" in st.session_state:
         st.session_state.total_seconds += int(elapsed_t)
 
-# 10分経過で自動保存
-if st.session_state.unsynced_seconds >= 600:
+# --- 同期頻度（通信）：未保存が900秒（15分）溜まったらスプレッドシートへ ---
+if st.session_state.unsynced_seconds >= 900:
     with st.sidebar:
         with st.spinner("⏳ 学習記録を自動保存中..."):
             st.session_state.daily_seconds = sync_timer(
@@ -2029,7 +2036,7 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                             st.success("OK! 記憶完了")
 
         else:
-            # --- 🍎 漢字以外の全カテゴリ：1行集約・インデント調整版 ---
+            # --- 🍎 英語・全カテゴリ共通：自動判別＆分割エンジン ---
             import re
             import random
 
@@ -2054,8 +2061,26 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                 """
                 <style>
                 @import url('https://fonts.googleapis.com/css2?family=Noto+Serif+JP:wght@700&display=swap');
-                .block-container { padding-top: 3.5rem !important; max-width: 1150px !important; margin: 0 auto !important; font-family: "Noto Serif JP", "Yu Mincho", "serif" !important; }
-                canvas.stCanvas { border: 1px solid #ddd !important; border-radius: 4px !important; display: block !important; margin: 0 auto !important; }
+                
+                .block-container { 
+                    padding-top: 3.5rem !important; 
+                    max-width: 1350px !important; 
+                    width: 98% !important;  /* 左右にわずかな隙間を確保 */
+                    margin: 0 auto !important; 
+                    font-family: "Noto Serif JP", "Yu Mincho", "serif" !important; 
+                }
+                
+                /* 枠線が外にはみ出さないように設定 */
+                canvas.stCanvas { 
+                    box-sizing: border-box !important; /* 枠線を内側に含める */
+                    border: 2px solid #ddd !important; /* 1pxから2pxにすると見やすくなります */
+                    border-radius: 4px !important; 
+                    display: block !important; 
+                    margin: 0 auto !important;
+                    max-width: 100% !important; /* 親要素（98%）に合わせる */
+                    width: 100% !important; 
+                    height: auto !important;
+                }
                 </style>
                 """,
                 unsafe_allow_html=True,
@@ -2072,11 +2097,10 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                 )
 
             with st_col_main:
-                # 🌟 内部カラムでスイッチとヒントを並べる
+                # 🌟 内部カラムでスイッチとヒントを並べる（元の調整済みレイアウト）
                 inner1, inner2 = st.columns([0.6, 9.0], gap="small")
 
                 with inner1:
-                    # スイッチ本体
                     is_help_on = st.toggle(
                         "",
                         value=st.session_state.get("show_help_persistence", False),
@@ -2086,51 +2110,29 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                     st.session_state.show_help_persistence = is_help_on
 
                 with inner2:
-                    # 🌟 1. 表示する中身を一度だけ準備
                     hint_label = "💡ヒント"
                     clean_help = str(help_text).strip() if help_text else ""
+                    display_content = (
+                        f"{hint_label} ➡ {clean_help}"
+                        if (is_help_on and clean_help)
+                        else hint_label
+                    )
 
-                    if is_help_on and clean_help:
-                        display_content = f"{hint_label} ➡ {clean_help}"
-                    else:
-                        display_content = hint_label
-
-                    # 🌟 2. 「小さい文字(14px)」かつ「高さ調整(-4px)」で表示
-                    # この st.markdown 一回だけにすることで、重複が消えます
                     st.markdown(
                         f"""
-                        <span style='
-                            display: inline-block; 
-                            vertical-align: -9px; 
-                            font-weight: bold; 
-                            color: #1f2937; 
-                            font-size: 14px; 
-                            white-space: nowrap;
-                        '>
+                        <span style='display: inline-block; vertical-align: -9px; font-weight: bold; color: #1f2937; font-size: 14px; white-space: nowrap;'>
                             {display_content}
                         </span>
                         """,
                         unsafe_allow_html=True,
                     )
-
-                    # 🌟 その直後に「位置調整だけ」を行う透明なCSSを差し込む
                     st.markdown(
-                        """
-                        <style>
-                        /* 3番目（inner2に相当）のMarkdownの余白を削ってスイッチに寄せる */
-                        [data-testid="column"]:nth-of-type(2) [data-testid="column"]:nth-of-type(2) p {
-                            margin-top: 8px !important;
-                            font-weight: bold !important;
-                            color: #1f2937 !important;
-                            font-size: 14px !important;
-                            white-space: nowrap !important;
-                        }
-                        </style>
-                        """,
+                        "<style>[data-testid='column']:nth-of-type(2) [data-testid='column']:nth-of-type(2) p { margin-top: 8px !important; font-weight: bold !important; color: #1f2937 !important; font-size: 14px !important; white-space: nowrap !important; }</style>",
                         unsafe_allow_html=True,
                     )
 
             # --- 📖 2. 問題表示 ---
+            en_disp, jp_disp, _ = parse_order_question(q_text, cat_name)
             st.markdown(f"### {en_disp}")
             if jp_disp:
                 st.markdown(f"**{jp_disp}**")
@@ -2143,7 +2145,7 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                 stroke_width=curr_w,
                 stroke_color=curr_c,
                 height=c_height,
-                width=1090,
+                width=1050,
                 drawing_mode="freedraw",
                 key=f"dyn_math_cv_{idx}",
                 display_toolbar=True,
@@ -2152,21 +2154,14 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
 
             # --- 🎨 4. ツール切り替え（ワープCSS） ---
             st.markdown(
-                """
-                <style>
-                div[data-testid="stRadio"] { transform: translateY(-68px) !important; margin-left: 140px !important; z-index: 1000 !important; }
-                div[data-testid="stHorizontalBlock"]:has(div[data-testid="stRadio"]) { height: 0px !important; min-height: 0px !important; margin-bottom: -100px !important; }
-                div[data-testid="stRadio"] > label { display: none !important; }
-                div[data-testid="stRadio"] div[role="radiogroup"] { flex-direction: row !important; gap: 15px !important; }
-                </style>
-                """,
+                "<style>div[data-testid='stRadio'] { transform: translateY(-68px) !important; margin-left: 140px !important; z-index: 1000 !important; } div[data-testid='stHorizontalBlock']:has(div[data-testid='stRadio']) { height: 0px !important; min-height: 0px !important; margin-bottom: -100px !important; } div[data-testid='stRadio'] > label { display: none !important; } div[data-testid='stRadio'] div[role='radiogroup'] { flex-direction: row !important; gap: 15px !important; }</style>",
                 unsafe_allow_html=True,
             )
             r_col, _ = st.columns([0.5, 0.5])
             with r_col:
                 mode = st.radio(
                     "Tool",
-                    options=["✏️ ペン", "🧼 消ゴム"],
+                    options=["✏️ ペン", "🧽 消ゴム"],
                     index=0
                     if st.session_state.get("stroke_color", "#000000") == "#000000"
                     else 1,
@@ -2180,127 +2175,168 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                     st.session_state.stroke_width = new_width
                     st.rerun()
 
-            # --- 📝 5. 解答・結果表示 ---
+            # --- 📝 5. クイズ表示 & 🚩 6. 操作ボタン (一体型レイアウト) ---
+
+            # 🎨 隙間を極限まで削るCSS
+            st.markdown(
+                """
+                <style>
+                /* コンテナ間の上下余白をゼロにする */
+                [data-testid="stVerticalBlock"] > div {
+                    gap: 0rem !important;
+                    padding-bottom: 0rem !important;
+                }
+                /* 成功・失敗メッセージの余白 */
+                div[data-testid="stNotification"] {
+                    margin-top: 5px !important;
+                    margin-bottom: 5px !important;
+                }
+                /* ボタンの上下の隙間 */
+                .stButton button {
+                    margin-top: 2px !important;
+                    margin-bottom: 2px !important;
+                }
+                /* 区切り線の余白 */
+                hr {
+                    margin-top: 10px !important;
+                    margin-bottom: 10px !important;
+                }
+                /* 単語チップの最小幅 */
+                div[data-testid="stHorizontalBlock"] button[data-testid="baseButton-secondary"] {
+                    min-width: 90px !important;
+                    padding: 0px 5px !important;
+                }
+                </style>
+            """,
+                unsafe_allow_html=True,
+            )
+
+            # --- クイズ本体エリア ---
+            # --- クイズ本体エリア ---
             if st.session_state.get("show_result"):
-                display_ans = str(ans_raw).replace("/", " ").replace(" ,", ",").strip()
+                # ⭕️❌ 判定表示
+                display_ans = ans_raw_str.replace("/", " ").replace(" ,", ",").strip()
+
                 if st.session_state.last_is_correct:
-                    st.success(f"⭕️ 正解: {display_ans}")
+                    # 🟢 正解の場合
+                    st.markdown(
+                        f"""
+                        <div style="
+                            background-color: #d4edda;
+                            color: #155724;
+                            padding: 10px 15px;
+                            border-radius: 8px;
+                            border-left: 6px solid #28a745;
+                            display: flex;
+                            align-items: baseline;
+                            flex-wrap: wrap;
+                            gap: 10px;
+                            margin-bottom: 10px;
+                        ">
+                            <span style='font-size: 1.1rem; font-weight: bold; white-space: nowrap;'>⭕️ 正解！</span> 
+                            <span style='font-size: 1.6rem; font-weight: 800; line-height: 1.1;'>{display_ans}</span>
+                        </div>
+                    """,
+                        unsafe_allow_html=True,
+                    )
                 else:
-                    st.error(f"❌ 不正解: {display_ans}")
-                res_c = st.columns(2)
-                if res_c[0].button(
-                    "🔄 もう一度", use_container_width=True, key=f"re_{idx}"
-                ):
-                    st.session_state.show_result = False
-                    st.session_state["user_ans_order"] = []
-                    st.session_state.current_opts = []
-                    st.rerun()
-                if res_c[1].button(
-                    "次へ進む ➡️",
-                    type="primary",
-                    use_container_width=True,
-                    key=f"nf_{idx}",
-                ):
-                    st.session_state.index += 1
-                    st.session_state.show_result = False
-                    st.session_state.show_options = False
-                    st.session_state["user_ans_order"] = []
-                    st.session_state.current_opts = []
-                    st.rerun()
+                    # 🔴 不正解の場合
+                    st.markdown(
+                        f"""
+                        <div style="
+                            background-color: #f8d7da;
+                            color: #721c24;
+                            padding: 10px 15px;
+                            border-radius: 8px;
+                            border-left: 6px solid #dc3545;
+                            display: flex;
+                            align-items: baseline;
+                            flex-wrap: wrap;
+                            gap: 10px;
+                            margin-bottom: 10px;
+                        ">
+                            <span style='font-size: 1.1rem; font-weight: bold; white-space: nowrap;'>❌ 不正解！正解は：</span> 
+                            <span style='font-size: 1.6rem; font-weight: 800; line-height: 1.1;'>{display_ans}</span>
+                        </div>
+                    """,
+                        unsafe_allow_html=True,
+                    )
             else:
-                # クイズ形式（スクランブル等）の表示ロジック
-                match_slash_in_q = re.search(r"\(([^)]*/[^)]*)\)", q_text)
-                empty_parens = re.findall(r"\(\s*\)", q_text)
-                is_scramble_render = (
-                    is_english
-                    and is_order
-                    and (match_slash_in_q or len(empty_parens) >= 2)
+                # クイズ形式の自動判別
+                m_inner = re.search(r"[\(（](.*?)[\)）]", q_text)
+                raw_inner = m_inner.group(1) if m_inner else ""
+                clean_options = [
+                    opt.strip() for opt in re.split(r"[/／]", raw_inner) if opt.strip()
+                ]
+                option_count = len(clean_options)
+                empty_parens = re.findall(r"[\(（]\s*[\)）]", q_text)
+
+                is_scramble_render = is_english and (
+                    len(empty_parens) >= 2 or option_count >= 3
                 )
+                is_two_choice = not is_scramble_render and option_count == 2
 
                 if is_scramble_render:
                     if "user_ans_order" not in st.session_state:
                         st.session_state["user_ans_order"] = []
-                    current_ans = st.session_state["user_ans_order"]
-                    st.info(
-                        f"解答組み立て: {' '.join(current_ans) if current_ans else '(単語を選択)'}"
+                    user_ans = st.session_state["user_ans_order"]
+                    st.info(f"解答: {' '.join(user_ans) if user_ans else '...'}")
+
+                    parts = (
+                        clean_options
+                        if option_count >= 3
+                        else [
+                            w.strip()
+                            for w in re.split(r"[/／\s]+", ans_raw_str)
+                            if w.strip()
+                        ]
                     )
-                    if match_slash_in_q:
-                        parts = [
-                            w.strip()
-                            for w in match_slash_in_q.group(1).split("/")
-                            if w.strip()
-                        ]
-                    elif len(empty_parens) >= 2:
-                        parts = [
-                            w.strip()
-                            for w in ans_raw_str.replace("/", " ").split()
-                            if w.strip()
-                        ]
-                    else:
-                        parts = [w.strip() for w in ans_raw_str.split("/") if w.strip()]
                     if not st.session_state.get("current_opts") or set(
                         st.session_state.get("current_opts", [])
                     ) != set(parts):
                         display_opts = list(parts)
                         random.shuffle(display_opts)
                         st.session_state.current_opts = display_opts
+
                     opts = st.session_state.current_opts
-                    for i in range(0, len(opts), 8):
-                        cols = st.columns(8)
-                        for j, word in enumerate(opts[i : i + 8]):
-                            if current_ans.count(word) < opts.count(word):
+                    for i in range(0, len(opts), 4):
+                        cols = st.columns(4)
+                        for j, word in enumerate(opts[i : i + 4]):
+                            if user_ans.count(word) < opts.count(word):
                                 if cols[j].button(
                                     word,
-                                    key=f"b_{idx}_{i + j}",
+                                    key=f"ch_{idx}_{i + j}",
                                     use_container_width=True,
                                 ):
                                     st.session_state["user_ans_order"].append(word)
                                     st.rerun()
-                    c = st.columns([1, 1, 2])
-                    if c[0].button(
-                        "🔄 最初から", key=f"clr_{idx}", use_container_width=True
-                    ):
-                        st.session_state["user_ans_order"] = []
-                        st.rerun()
-                    if c[1].button("⬅️ 戻す", key=f"ud_{idx}", use_container_width=True):
-                        if current_ans:
-                            st.session_state["user_ans_order"].pop()
+
+                elif is_two_choice:
+                    st.write("▼ 正解を選択")
+                    cols = st.columns(len(clean_options))
+                    for j, word in enumerate(clean_options):
+                        if cols[j].button(
+                            word, key=f"t2_{idx}_{j}", use_container_width=True
+                        ):
+                            correct_val = re.split(r"[/／]", ans_raw_str)[0].strip()
+                            ok = word.lower().strip() == correct_val.lower().strip()
+                            st.session_state.last_is_correct = ok
+                            st.session_state.show_result = True
+                            if ok:
+                                st.session_state.correct_count += 1
+                            st.session_state.session_results.append(
+                                {"q": q["q"], "cat": cat, "correct": ok}
+                            )
+                            queue_sound("correct.mp3" if ok else "wrong.mp3")
                             st.rerun()
-                    if c[2].button(
-                        "✅ 確定",
-                        type="primary",
-                        key=f"fix_{idx}",
-                        use_container_width=True,
-                    ):
-
-                        def clean(v):
-                            return re.sub(
-                                r"[ ,.\?!\(\)/]",
-                                "",
-                                "".join(v) if isinstance(v, list) else str(v),
-                            ).lower()
-
-                        ok = clean(current_ans) == clean(ans_raw_str)
-                        st.session_state.last_is_correct = ok
-                        st.session_state.show_result = True
-                        if ok:
-                            st.session_state.correct_count += 1
-                        st.session_state.session_results.append(
-                            {"q": q["q"], "cat": cat, "correct": ok}
-                        )
-                        queue_sound("correct.mp3" if ok else "wrong.mp3")
-                        st.rerun()
                 else:
                     if not st.session_state.get("show_options"):
                         if st.button(
-                            "🤔 答えをイメージしてからクリック！",
-                            key=f"bm_{idx}",
-                            use_container_width=True,
+                            "答えを表示する", key=f"sh_{idx}", use_container_width=True
                         ):
                             st.session_state.show_options = True
                             st.rerun()
                     else:
-                        st.write("▼ 正しいものを1つ選んでください")
                         correct_val = ans_raw_str.split("/")[0].strip()
                         dummy_raw = str(q.get("dummy", ""))
                         all_dummies = [
@@ -2311,18 +2347,18 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                         selected_dummies = random.sample(
                             all_dummies, min(len(all_dummies), 3)
                         )
-                        four_choice = [correct_val] + selected_dummies
+                        opts_list = [correct_val] + selected_dummies
                         if not st.session_state.get("current_opts") or set(
                             st.session_state.get("current_opts", [])
-                        ) != set(four_choice):
-                            display_opts = list(four_choice)
+                        ) != set(opts_list):
+                            display_opts = list(opts_list)
                             random.shuffle(display_opts)
                             st.session_state.current_opts = display_opts
-                        opts = st.session_state.current_opts
-                        cols = st.columns(len(opts))
-                        for j, word in enumerate(opts):
+
+                        cols = st.columns(len(st.session_state.current_opts))
+                        for j, word in enumerate(st.session_state.current_opts):
                             if cols[j].button(
-                                word, key=f"opt_{idx}_{j}", use_container_width=True
+                                word, key=f"f4_{idx}_{j}", use_container_width=True
                             ):
 
                                 def clean_s(t):
@@ -2338,89 +2374,136 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                                 )
                                 queue_sound("correct.mp3" if ok else "wrong.mp3")
                                 st.rerun()
-                        if st.button(
-                            "🙈 隠す", key=f"btn_hide_{idx}", use_container_width=True
-                        ):
-                            st.session_state.show_options = False
-                            st.rerun()
 
-            # 🚩 6. ナビゲーション
-            st.write("")
-            n_col = st.columns(3)
+            # --- 操作ボタン ---
+            target_id = q.get("id", "不明")
+            st.markdown("---")
+
+            n_col = st.columns([0.5, 1.0, 1.0, 0.2, 1.1, 1.1, 0.2, 2.0])
+
             with n_col[0]:
-                target_id = q.get("id")
-                if st.button("🗑️ 削除実行", key=f"nd_{idx}", use_container_width=True):
-                    if target_id and len(str(target_id)) > 5:
-                        with st.spinner("削除中..."):
-                            if delete_question_by_id(target_id):
-                                st.session_state.questions.pop(idx)
-                                if st.session_state.index >= len(
-                                    st.session_state.questions
-                                ):
-                                    st.session_state.index = max(
-                                        0, len(st.session_state.questions) - 1
-                                    )
-                                st.cache_data.clear()
-                                time.sleep(0.5)
-                                st.rerun()
-                st.caption(f"🆔 '{target_id}'")
+                if st.button("🗑️", key=f"nv_d_{idx}"):
+                    st.session_state.confirm_delete = True
 
             with n_col[1]:
-                if st.button("⬅️ 前へ", key=f"np_{idx}", use_container_width=True):
+                if st.button("前へ", key=f"nv_p_{idx}", use_container_width=True):
                     if st.session_state.index > 0:
                         st.session_state.index -= 1
                         st.session_state.show_result = False
-                        st.session_state.show_options = False
                         st.session_state["user_ans_order"] = []
-                        st.session_state.current_opts = []
                         st.rerun()
 
             with n_col[2]:
-                if st.button("⏭️ 次へ", key=f"ns_{idx}", use_container_width=True):
+                if st.button("スキップ", key=f"nv_s_{idx}", use_container_width=True):
                     st.session_state.index += 1
                     st.session_state.show_result = False
-                    st.session_state.show_options = False
                     st.session_state["user_ans_order"] = []
-                    st.session_state.current_opts = []
                     st.rerun()
 
-            # --- 🏁 全問終了時の合格判定ロジック ---
-            # 💡 ポイント: この if 文の中で 'score_rate' を計算し、そのまま使います
+            with n_col[4]:
+                if st.button(
+                    "1つ消す",
+                    key=f"nv_b_{idx}",
+                    use_container_width=True,
+                    disabled=st.session_state.get("show_result", False),
+                ):
+                    if st.session_state.get("user_ans_order"):
+                        st.session_state["user_ans_order"].pop()
+                        st.rerun()
+
+            with n_col[5]:
+                if st.button(
+                    "全部消す",
+                    key=f"nv_c_{idx}",
+                    use_container_width=True,
+                    disabled=st.session_state.get("show_result", False),
+                ):
+                    st.session_state["user_ans_order"] = []
+                    st.rerun()
+
+            with n_col[7]:
+                if not st.session_state.get("show_result"):
+                    if st.button(
+                        "✅ 確定する",
+                        type="primary",
+                        key=f"nv_fix_{idx}",
+                        use_container_width=True,
+                    ):
+
+                        def clean_final(v):
+                            return re.sub(
+                                r"[ ,.\?!\(\)/／]",
+                                "",
+                                "".join(v) if isinstance(v, list) else str(v),
+                            ).lower()
+
+                        u_ans = st.session_state.get("user_ans_order", [])
+                        ok = clean_final(u_ans) == clean_final(ans_raw_str)
+                        st.session_state.last_is_correct = ok
+                        st.session_state.show_result = True
+                        if ok:
+                            st.session_state.correct_count += 1
+                        st.session_state.session_results.append(
+                            {"q": q["q"], "cat": cat, "correct": ok}
+                        )
+                        queue_sound("correct.mp3" if ok else "wrong.mp3")
+                        st.rerun()
+                else:
+                    res_btn_col = st.columns(2)
+                    with res_btn_col[0]:
+                        if st.button(
+                            "もう一度", key=f"nv_re_{idx}", use_container_width=True
+                        ):
+                            st.session_state.show_result = False
+                            st.session_state["user_ans_order"] = []
+                            st.session_state.current_opts = []
+                            st.rerun()
+                    with res_btn_col[1]:
+                        if st.button(
+                            "次へ ➡️",
+                            type="primary",
+                            key=f"nv_next_{idx}",
+                            use_container_width=True,
+                        ):
+                            st.session_state.index += 1
+                            st.session_state.show_result = False
+                            st.session_state.show_options = False
+                            st.session_state["user_ans_order"] = []
+                            st.session_state.current_opts = []
+                            st.rerun()
+
+            st.caption(f"ID: {target_id}")
+
+            # --- ⚠️ 削除確認 ---
+            if st.session_state.get("confirm_delete", False):
+                st.warning("削除しますか？")
+                c_y, c_n = st.columns(2)
+                with c_y:
+                    if st.button(
+                        "はい、削除します", key=f"del_y_{idx}", use_container_width=True
+                    ):
+                        if delete_question_by_id(target_id):
+                            st.session_state.questions.pop(idx)
+                            st.cache_data.clear()
+                            st.session_state.confirm_delete = False
+                            st.rerun()
+                with c_n:
+                    if st.button(
+                        "いいえ", key=f"del_n_{idx}", use_container_width=True
+                    ):
+                        st.session_state.confirm_delete = False
+                        st.rerun()
+
+            # --- 🏁 合格判定 ---
             if st.session_state.index + 1 == len(
                 st.session_state.questions
             ) and st.session_state.get("show_result"):
-                # 1. まず計算する（NameError防止）
                 total_q = len(st.session_state.questions)
                 correct_q = st.session_state.correct_count
-
-                # ここで score_rate を定義します
                 score_rate = (correct_q / total_q) * 100
-
-                # 2. 計算した直後に判定する
                 if score_rate >= 80:
                     st.balloons()
-                    rank_text = (
-                        "🎖️ 極・マスター" if score_rate == 100 else "👑 合格（実力者）"
-                    )
-                    st.markdown(
-                        f"""
-                        <div style="background: linear-gradient(135deg, #ffffff 0%, #f0f7ff 100%); padding: 30px; border-radius: 20px; border: 4px solid #2196f3; box-shadow: 0 15px 30px rgba(33, 150, 243, 0.2); text-align: center; margin: 25px 0;">
-                            <div style="font-size: 16px; color: #1976d2; font-weight: bold; letter-spacing: 2px; margin-bottom: 10px;">{cat} 習得証明</div>
-                            <h1 style="color: #0d47a1; margin: 0; font-size: 2.2em;">{rank_text}</h1>
-                            <div style="font-size: 65px; font-weight: bold; color: #1565c0; border-bottom: 3px solid #bbdefb; display: inline-block; padding: 0 40px; margin: 15px 0;">
-                                {score_rate:.1f}<span style="font-size: 24px;">点</span>
-                            </div>
-                            <div style="margin-top: 20px; font-size: 22px; color: #1e88e5; font-weight: bold;">🎉 記述式・実力テストの受検資格を獲得！</div>
-                            <p style="color: #607d8b; margin-top: 15px; font-size: 15px; background: #e3f2fd; padding: 10px; border-radius: 10px;"><b>この画面を親に見せて、記述テストを受け取ろう！</b></p>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-                else:
-                    # 80点未満の場合
-                    st.info(
-                        f"今回のスコア：**{score_rate:.1f}点** ({correct_q}/{total_q}問)\n\nあと少し！80点を超えると合格カードが出ます。"
-                    )
+                    st.success(f"合格！ スコア：{score_rate:.1f}点")
 
 # 🔊 音声再生
 execute_queued_sound()
