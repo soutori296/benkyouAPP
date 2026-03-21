@@ -763,7 +763,7 @@ def get_cooldown_questions(history, cooldown=3):
     return recent_texts
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=600)
 def load_db():
     """
     スプレッドシートから全問題をロードし、統計情報を動的に生成します。
@@ -2392,21 +2392,24 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                 unsafe_allow_html=True,
             )
 
-            # --- 📝 5. クイズ表示 & 🚩 6. 操作ボタン (完全統合版) ---
+            # --- 📝 5. クイズ表示 & 🚩 6. 操作ボタン ---
 
-            # 【1. クイズ形式の自動判定】
-            # 回答を分割して2つ以上あれば並べ替えと判定
+            # 【1. クイズ形式の自動判定：英語専用ガード付き】
             parts_check = [
                 w.strip() for w in re.split(r"[/／\s]+", str(ans_raw_str)) if w.strip()
             ]
-            is_really_scramble = len(parts_check) > 1
 
-            # カッコ内から選択肢を抽出（2択判定用）
+            # ★ここを修正：カテゴリに「英語」が入っており、かつ単語が2つ以上の場合のみ並び替え
+            is_really_scramble = "英語" in str(cat) and len(parts_check) > 1
+
+            # 選択肢の数を取得（2択判定用）
             m_inner = re.search(r"[\(（](.*?)[\)）]", q_text)
             raw_inner = m_inner.group(1) if m_inner else ""
             clean_options = [
                 opt.strip() for opt in re.split(r"[/／]", raw_inner) if opt.strip()
             ]
+
+            # 2択の判定：並び替えではなく、かつ選択肢が2つの場合
             is_two_choice = not is_really_scramble and len(clean_options) == 2
 
             # 【2. グローバルリセット】問題(idx)が変わった瞬間に掃除
