@@ -49,6 +49,92 @@ def execute_queued_sound():
         st.session_state["sound_queue_b64"] = None
 
 
+def to_pretty_display(text):
+    """ボタン・ヒント用：LaTeXを記号・変数イタリック・エスケープ掃除込みで変換する"""
+    if not isinstance(text, str):
+        return text
+
+    # 1. $ を消去
+    t = text.replace("$", "")
+
+    # 2. 【新規追加】LaTeXのエスケープ記号（\% など）を普通の記号に戻す
+    # % や $ や _ などの前にある \ を取り除きます
+    escape_chars = ["%", "$", "_", "{", "}", "&", "#"]
+    for char in escape_chars:
+        t = t.replace(f"\\{char}", char)
+
+    # 3. 算数・数学の特殊記号（\times など）
+    replacements = {
+        "\\times": "×",
+        "\\div": "÷",
+        "\\pm": "±",
+        "\\leqq": "≦",
+        "\\geqq": "≧",
+        "\\le": "≦",
+        "\\ge": "≧",
+        "\\pi": "π",
+        "\\approx": "≒",
+        "\\therefore": "∴",
+        "\\because": "∵",
+        "\\triangle": "△",
+        "\\angle": "∠",
+        "\\infty": "∞",
+    }
+    for old, new in replacements.items():
+        t = t.replace(old, new)
+
+    # 3. \text{...} の中身だけを取り出す（化学式などはここに含まれる）
+    t = re.sub(r"\\text\{([^}]*)\}", r"\1", t)
+
+    # 4. 数学の変数を数式用イタリック文字に一括変換
+    # 教科書でよく使う文字を網羅（a-z）
+    var_map = {
+        "a": "𝑎",
+        "b": "𝑏",
+        "c": "𝑐",
+        "d": "𝑑",
+        "e": "𝑒",
+        "f": "𝑓",
+        "g": "𝑔",
+        "h": "ℎ",
+        "i": "𝑖",
+        "j": "𝑗",
+        "k": "𝑘",
+        "l": "𝑙",
+        "m": "𝑚",
+        "n": "𝑛",
+        "o": "𝑜",
+        "p": "𝑝",
+        "q": "𝑞",
+        "r": "𝑟",
+        "s": "𝑠",
+        "t": "𝑡",
+        "u": "𝑢",
+        "v": "𝑣",
+        "w": "𝑤",
+        "x": "𝑥",
+        "y": "𝑦",
+        "z": "𝑧",
+    }
+
+    # 独立したアルファベット1文字のみを変換（化学式の H や O を避けるため）
+    for eng, math in var_map.items():
+        # 前後に他のアルファベットがない場合のみ置換する
+        t = re.sub(rf"(^|[^a-zA-Z]){eng}([^a-zA-Z]|$)", rf"\1{math}\2", t)
+
+    # 5. 下付き・上付き文字の変換
+    sub_map = str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")
+    t = re.sub(r"_\{?(\d+)\}?", lambda m: m.group(1).translate(sub_map), t)
+
+    sup_map = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
+    t = re.sub(r"\^\{?(\d+)\}?", lambda m: m.group(1).translate(sup_map), t)
+
+    # 6. 残った不要な中括弧を消去
+    t = t.replace("{", "").replace("}", "")
+
+    return t
+
+
 # =============================================================================
 # 1. 定数・グローバル設定
 # =============================================================================
@@ -2198,7 +2284,12 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
 
                 with inner2:
                     hint_label = "💡ヒント"
-                    clean_help = str(help_text).strip() if help_text else ""
+
+                    # 【ここを書き換え】to_pretty_display を適用して LaTeX 記号を掃除します
+                    clean_help = (
+                        to_pretty_display(str(help_text).strip()) if help_text else ""
+                    )
+
                     display_content = (
                         f"{hint_label} ➡ {clean_help}"
                         if (is_help_on and clean_help)
@@ -2207,14 +2298,16 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
 
                     st.markdown(
                         f"""
-                        <span style='display: inline-block; vertical-align: -9px; font-weight: bold; color: #1f2937; font-size: 14px; white-space: nowrap;'>
+                        <span style='display: inline-block; vertical-align: -9px; font-weight: bold; color: #1f2937; font-size: 18px; white-space: nowrap;'>
                             {display_content}
                         </span>
                         """,
                         unsafe_allow_html=True,
                     )
+
+                    # 下記の style ブロック内の 14px も 18px に合わせて変更します
                     st.markdown(
-                        "<style>[data-testid='column']:nth-of-type(2) [data-testid='column']:nth-of-type(2) p { margin-top: 8px !important; font-weight: bold !important; color: #1f2937 !important; font-size: 14px !important; white-space: nowrap !important; }</style>",
+                        "<style>[data-testid='column']:nth-of-type(2) [data-testid='column']:nth-of-type(2) p { margin-top: 8px !important; font-weight: bold !important; color: #1f2937 !important; font-size: 18px !important; white-space: nowrap !important; }</style>",
                         unsafe_allow_html=True,
                     )
 
@@ -2300,18 +2393,32 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
 
             # --- 📝 5. クイズ表示 & 🚩 6. 操作ボタン ---
             if st.session_state.get("show_result"):
-                # ⭕️❌ 判定表示（1行・強調版）
-                display_ans = ans_raw_str.replace("/", " ").replace(" ,", ",").strip()
+                # 1. まず to_pretty_display を通して LaTeX を綺麗にする
+                # 2. その後で既存の整形（replace）を行う
+                display_ans = (
+                    to_pretty_display(ans_raw_str)
+                    .replace("/", " ")
+                    .replace(" ,", ",")
+                    .strip()
+                )
+
                 if st.session_state.last_is_correct:
                     st.markdown(
-                        f"""<div style="background-color: #d4edda; color: #155724; padding: 10px 15px; border-radius: 8px; border-left: 6px solid #28a745; display: flex; align-items: baseline; flex-wrap: wrap; gap: 10px; margin-bottom: 10px;"><span style='font-size: 1.1rem; font-weight: bold; white-space: nowrap;'>⭕️ 正解！</span><span style='font-size: 1.6rem; font-weight: 800; line-height: 1.1;'>{display_ans}</span></div>""",
+                        f"""<div style="background-color: #d4edda; color: #155724; padding: 10px 15px; border-radius: 8px; border-left: 6px solid #28a745; display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 10px;">
+                            <span style='font-size: 1.2rem; font-weight: bold; white-space: nowrap;'>⭕️ 正解！</span>
+                            <span style='font-size: 1.8rem; font-weight: 800; line-height: 1.1;'>{display_ans}</span>
+                        </div>""",
                         unsafe_allow_html=True,
                     )
                 else:
                     st.markdown(
-                        f"""<div style="background-color: #f8d7da; color: #721c24; padding: 10px 15px; border-radius: 8px; border-left: 6px solid #dc3545; display: flex; align-items: baseline; flex-wrap: wrap; gap: 10px; margin-bottom: 10px;"><span style='font-size: 1.1rem; font-weight: bold; white-space: nowrap;'>❌ 不正解！正解は：</span><span style='font-size: 1.6rem; font-weight: 800; line-height: 1.1;'>{display_ans}</span></div>""",
+                        f"""<div style="background-color: #f8d7da; color: #721c24; padding: 10px 15px; border-radius: 8px; border-left: 6px solid #dc3545; display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 10px;">
+                            <span style='font-size: 1.2rem; font-weight: bold; white-space: nowrap;'>❌ 残念！正解は：</span>
+                            <span style='font-size: 1.8rem; font-weight: 800; line-height: 1.1;'>{display_ans}</span>
+                        </div>""",
                         unsafe_allow_html=True,
                     )
+
             else:
                 # クイズ形式の自動判別
                 m_inner = re.search(r"[\(（](.*?)[\)）]", q_text)
@@ -2354,11 +2461,15 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                     opts = st.session_state.current_opts
                     for i in range(0, len(opts), 8):
                         cols = st.columns(8)  # ★ 1行に8つ並べる
+                        # --- 修正箇所（1056行目付近） ---
                         for j, word in enumerate(opts[i : i + 8]):
                             if user_ans.count(word) < opts.count(word):
+                                # 表示する時だけ $ を消す（replaceを追加）
                                 if cols[j].button(
-                                    word,
-                                    key=f"ch_{idx}_{i + j}",
+                                    to_pretty_display(
+                                        word
+                                    ),  # ← ここを replace ではなく関数名にする！
+                                    key="...",
                                     use_container_width=True,
                                 ):
                                     st.session_state["user_ans_order"].append(word)
@@ -2370,7 +2481,9 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                     cols = st.columns(8)  # レイアウト維持のため8列枠を使用
                     for j, word in enumerate(clean_options):
                         if cols[j].button(
-                            word, key=f"t2_{idx}_{j}", use_container_width=True
+                            to_pretty_display(word),
+                            key=f"ch_{idx}_{i + j}",
+                            use_container_width=True,
                         ):
                             correct_val = re.split(r"[/／]", ans_raw_str)[0].strip()
                             ok = word.lower().strip() == correct_val.lower().strip()
@@ -2416,12 +2529,18 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
 
                         cols = st.columns(8)  # ★ 1行8列の枠でボタンを配置
                         for j, word in enumerate(st.session_state.current_opts):
+                            # 【ここを書き換え！】
+                            # word.replace("$", "") ではなく、to_pretty_display(word) を使います
                             if cols[j].button(
-                                word, key=f"f4_{idx}_{j}", use_container_width=True
+                                to_pretty_display(word),
+                                key=f"f4_{idx}_{j}",
+                                use_container_width=True,
                             ):
-
+                                # 判定ロジックは以前直した「$無視」のままでOKです
                                 def clean_s(t):
-                                    return re.sub(r"[ ,.\?!\(\)/]", "", str(t)).lower()
+                                    return re.sub(
+                                        r"[\$ ,.\?!\(\)/]", "", str(t)
+                                    ).lower()
 
                                 ok = clean_s(word) == clean_s(correct_val)
                                 st.session_state.last_is_correct = ok
@@ -2487,10 +2606,11 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                         key=f"nv_fix_{idx}",
                         use_container_width=True,
                     ):
-
+                        # --- 修正箇所（1125行目付近） ---
                         def clean_final(v):
+                            # 正規表現に \$ を追加してドル記号を無視
                             return re.sub(
-                                r"[ ,.\?!\(\)/／]",
+                                r"[\$ ,.\?!\(\)/／]",
                                 "",
                                 "".join(v) if isinstance(v, list) else str(v),
                             ).lower()
