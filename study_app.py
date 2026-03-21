@@ -1684,9 +1684,33 @@ if not st.session_state.mode:
                             st.rerun()
 
                         # 2. 情報表示
+                        # 🌟 重複した単語を確実に1つにまとめる処理
+                        raw_subject = str(h.get("教科", ""))
+
+                        # ① まず不要な「検索」や「：」「:」を消去
+                        # ※ ここで「temp_text」という名前で定義します
+                        temp_text = (
+                            raw_subject.replace("検索：", "")
+                            .replace("検索:", "")
+                            .replace("検索", "")
+                            .replace("：", "")
+                            .replace(":", "")
+                        )
+
+                        # ② 全角スペースを半角に統一して分割
+                        words = temp_text.replace("　", " ").split()
+
+                        # ③ 重複を除去（順番を維持したまま1つにする）
+                        unique_words = []
+                        for w in words:
+                            if w not in unique_words:
+                                unique_words.append(w)
+
+                        clean_subject = " ".join(unique_words).strip()
+
                         c_info.markdown(
                             f"<small style='color:#888;'>{h.get('日付')} | `{tid}`</small><br>"
-                            f"<strong style='font-size:18px;'>{h.get('教科')}</strong>",
+                            f"<strong style='font-size:18px;'>{clean_subject}</strong>",
                             unsafe_allow_html=True,
                         )
 
@@ -1879,8 +1903,10 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                 unsafe_allow_html=True,
             )
 
+            # 漢字モードのタイトル表示
+            display_title = str(q.get("q", "")).replace("検索", "").strip()
             st.markdown(
-                f"<div style='text-align:center; font-size:20px; font-weight:bold; margin-bottom:10px;'>🛡️ 漢字特訓：{q['q']}</div>",
+                f"<div style='text-align:center; font-size:20px; font-weight:bold; margin-bottom:10px;'>🛡️ 漢字特訓：{display_title}</div>",
                 unsafe_allow_html=True,
             )
 
@@ -1916,11 +1942,6 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                     # 現在のスコアを取得
                     score_val = st.session_state.kj_scores[i]
 
-                    # 🌟 進行度に合わせて「漢字名」と「お手本」の透明度を変える
-                    # 0%   : 1.0 (くっきり)
-                    # 34%  : 0.15 (うっすら)
-                    # 66%  : 0.0 (完全に消える)
-                    # 100% : 1.0 (正解確認のため再表示)
                     opacity = 1.0
                     if score_val == 34:
                         opacity = 0.15
@@ -1937,33 +1958,20 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                     if lock_key not in st.session_state:
                         st.session_state[lock_key] = False
 
-                    # 🌟 漢字名（％）の表示：透明度を連動
                     st.markdown(
-                        f"""
-                        <div style='text-align:center; font-weight:bold; opacity: {opacity}; transition: opacity 0.5s;'>
-                            {char} ({min(100, score_val)}%)
-                        </div>
-                        """,
+                        f"<div style='text-align:center; font-weight:bold; opacity: {opacity}; transition: opacity 0.5s;'>{char} ({min(100, score_val)}%)</div>",
                         unsafe_allow_html=True,
                     )
 
                     with st.container(border=True):
-                        # 🌟 お手本表示：透明度を連動
                         st.markdown(
-                            f"""
-                            <div style='text-align:center;'>
-                                <div style='font-size:55px; font-family:serif; opacity: {opacity}; transition: opacity 0.5s;'>{char}</div>
-                                <div style='font-size:10px;'>{stroke_setting}画</div>
-                            </div>
-                            """,
+                            f"<div style='text-align:center;'><div style='font-size:55px; font-family:serif; opacity: {opacity}; transition: opacity 0.5s;'>{char}</div><div style='font-size:10px;'>{stroke_setting}画</div></div>",
                             unsafe_allow_html=True,
                         )
                         st.progress(min(100, score_val) / 100)
 
                         if score_val < 100:
                             r_key = st.session_state.get(f"reset_{idx}_{i}", 0)
-
-                            # キャンバス本体（230x230）
                             cv_res = st_canvas(
                                 stroke_width=8,
                                 stroke_color="#000000",
@@ -1975,7 +1983,6 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                             )
 
                             b1, b2 = st.columns(2)
-
                             if b1.button(
                                 "📮 判定",
                                 key=f"score_{idx}_{i}",
@@ -1988,8 +1995,6 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                                         cv_res, char, stroke_setting
                                     )
                                     st.session_state[lock_key] = True
-
-                                    # 段階的なスコアアップとヒントの切り替え
                                     if s_p == 100:
                                         st.session_state.kj_scores[i] = 100
                                         st.session_state[hint_key] = "完璧！記憶完了💮"
@@ -1999,14 +2004,8 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                                         queue_sound("correct.mp3")
                                         if score_val == 0:
                                             st.session_state.kj_scores[i] = 34
-                                            st.session_state[hint_key] = (
-                                                "次は薄い影をたよりに、パーツの配置を思い出して！"
-                                            )
                                         elif score_val == 34:
                                             st.session_state.kj_scores[i] = 66
-                                            st.session_state[hint_key] = (
-                                                "最後は真っ白な状態から。自分の記憶を信じて！"
-                                            )
                                         elif score_val == 66:
                                             st.session_state.kj_scores[i] = 100
                                         st.rerun()
@@ -2025,15 +2024,103 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                                 st.rerun()
 
                             st.markdown(
-                                f"""
-                                <div style="background-color: #f0f7ff; border-left: 5px solid #007bff; padding: 10px; margin-top: 10px; border-radius: 4px; font-size: 13px; color: #333; min-height: 55px;">
-                                    <strong>💡 ヒント:</strong><br>{st.session_state[hint_key]}
-                                </div>
-                                """,
+                                f"<div style='background-color: #f0f7ff; border-left: 5px solid #007bff; padding: 10px; margin-top: 10px; border-radius: 4px; font-size: 13px; color: #333; min-height: 55px;'><strong>💡 ヒント:</strong><br>{st.session_state[hint_key]}</div>",
                                 unsafe_allow_html=True,
                             )
                         else:
                             st.success("OK! 記憶完了")
+
+            # --- 修正版：ごみ箱の下にIDを「改行なし」で表示 ---
+            st.write("")
+            target_id = q.get("id", "N/A")
+
+            # 全文字クリア判定
+            all_clear = all(v == 100 for v in st.session_state.kj_scores.values())
+
+            # カラム比率：[管理(0.8に拡大), 前へ, スキップ, 次へ]
+            # 左端を0.8に広げることでIDの横幅を確保します
+            nav_c0, nav_c1, nav_c2, nav_c3 = st.columns([0.8, 1, 1, 1.4])
+
+            with nav_c0:
+                # 1. 上段にごみ箱（幅を少し絞って小さく見せる）
+                sub_del_c1, _ = st.columns([1, 0.5])
+                with sub_del_c1:
+                    if st.button(
+                        "🗑️",
+                        key=f"kj_del_{idx}",
+                        use_container_width=True,
+                        help="この問題を削除",
+                    ):
+                        st.session_state.confirm_delete = True
+                        st.rerun()
+
+                # 2. 下段にID表示（white-space: nowrap で絶対改行させない）
+                st.markdown(
+                    f"""
+                    <div style='
+                        color: gray; 
+                        font-size: 0.75rem; 
+                        margin-top: -5px; 
+                        white-space: nowrap; 
+                        overflow: visible;
+                        text-align: left;
+                    '>🆔{target_id}</div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+            with nav_c1:
+                if st.button("⬅️ 前へ", key=f"kj_prev_{idx}", use_container_width=True):
+                    if st.session_state.index > 0:
+                        st.session_state.index -= 1
+                        st.rerun()
+
+            with nav_c2:
+                if st.button(
+                    "⏩ スキップ", key=f"kj_skip_{idx}", use_container_width=True
+                ):
+                    if st.session_state.index + 1 < len(qs):
+                        st.session_state.index += 1
+                        st.rerun()
+
+            with nav_c3:
+                # 100%達成時のみ有効
+                if st.button(
+                    "✅ 完了！次へ",
+                    key=f"kj_next_{idx}",
+                    use_container_width=True,
+                    type="primary" if all_clear else "secondary",
+                    disabled=not all_clear,
+                    help="全文字100%になると進めます",
+                ):
+                    if st.session_state.index + 1 < len(qs):
+                        st.session_state.index += 1
+                        st.rerun()
+                    else:
+                        st.success("全問達成です！")
+
+            # --- 削除確認 ---
+            if st.session_state.get("confirm_delete", False):
+                st.error(f"🆔 {target_id} を削除しますか？")
+                d_c1, d_c2 = st.columns(2)
+                with d_c1:
+                    if st.button(
+                        "はい、削除",
+                        key=f"kj_del_y_{idx}",
+                        type="primary",
+                        use_container_width=True,
+                    ):
+                        if delete_question_by_id(target_id):
+                            st.session_state.questions.pop(st.session_state.index)
+                            st.cache_data.clear()
+                            st.session_state.confirm_delete = False
+                            st.rerun()
+                with d_c2:
+                    if st.button(
+                        "いいえ", key=f"kj_del_n_{idx}", use_container_width=True
+                    ):
+                        st.session_state.confirm_delete = False
+                        st.rerun()
 
         else:
             # --- 🍎 英語・全カテゴリ共通：自動判別＆分割エンジン ---
