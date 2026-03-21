@@ -2274,11 +2274,12 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                 inner1, inner2 = st.columns([0.6, 9.0], gap="small")
 
                 with inner1:
+                    # 【修正ポイント】第一引数を "" から "hint" に変更しました
                     is_help_on = st.toggle(
-                        "",
+                        "hint",
                         value=st.session_state.get("show_help_persistence", False),
                         key=f"help_tg_{idx}",
-                        label_visibility="collapsed",
+                        label_visibility="collapsed",  # これで "hint" という文字は見えなくなります
                     )
                     st.session_state.show_help_persistence = is_help_on
 
@@ -2391,10 +2392,34 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                 unsafe_allow_html=True,
             )
 
-            # --- 📝 5. クイズ表示 & 🚩 6. 操作ボタン ---
+            # --- 📝 5. クイズ表示 & 🚩 6. 操作ボタン (完全統合版) ---
+
+            # 【1. クイズ形式の自動判定】
+            # 回答を分割して2つ以上あれば並べ替えと判定
+            parts_check = [
+                w.strip() for w in re.split(r"[/／\s]+", str(ans_raw_str)) if w.strip()
+            ]
+            is_really_scramble = len(parts_check) > 1
+
+            # カッコ内から選択肢を抽出（2択判定用）
+            m_inner = re.search(r"[\(（](.*?)[\)）]", q_text)
+            raw_inner = m_inner.group(1) if m_inner else ""
+            clean_options = [
+                opt.strip() for opt in re.split(r"[/／]", raw_inner) if opt.strip()
+            ]
+            is_two_choice = not is_really_scramble and len(clean_options) == 2
+
+            # 【2. グローバルリセット】問題(idx)が変わった瞬間に掃除
+            if st.session_state.get("last_idx_global") != idx:
+                st.session_state["user_ans_order"] = []
+                st.session_state["current_opts"] = None
+                st.session_state["show_options"] = False
+                st.session_state["show_result"] = False
+                st.session_state["last_idx_global"] = idx
+
+            # 【3. 画面表示の分岐】「結果表示」か「クイズ表示」のどちらか一方だけを出す
             if st.session_state.get("show_result"):
-                # 1. まず to_pretty_display を通して LaTeX を綺麗にする
-                # 2. その後で既存の整形（replace）を行う
+                # --- 結果発表バナー (重複を防ぐためここ1箇所だけに集約) ---
                 display_ans = (
                     to_pretty_display(ans_raw_str)
                     .replace("/", " ")
@@ -2420,73 +2445,54 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                     )
 
             else:
-                # クイズ形式の自動判別
-                m_inner = re.search(r"[\(（](.*?)[\)）]", q_text)
-                raw_inner = m_inner.group(1) if m_inner else ""
-                clean_options = [
-                    opt.strip() for opt in re.split(r"[/／]", raw_inner) if opt.strip()
-                ]
-                option_count = len(clean_options)
-                empty_parens = re.findall(r"[\(（]\s*[\)）]", q_text)
-
-                is_scramble_render = is_english and (
-                    len(empty_parens) >= 2 or option_count >= 3
-                )
-                is_two_choice = not is_scramble_render and option_count == 2
-
-                # --- クイズ表示ロジック ---
-                if is_scramble_render:
-                    # --- [A] 並び替えクイズ (1行8つ対応) ---
+                # --- クイズ本体の表示 (まだ解いていない時のみ) ---
+                if is_really_scramble:
+                    # [A] 並べ替えクイズ
                     if "user_ans_order" not in st.session_state:
                         st.session_state["user_ans_order"] = []
                     user_ans = st.session_state["user_ans_order"]
                     st.info(f"解答: {' '.join(user_ans) if user_ans else '...'}")
 
-                    parts = (
-                        clean_options
-                        if option_count >= 3
-                        else [
-                            w.strip()
-                            for w in re.split(r"[/／\s]+", ans_raw_str)
-                            if w.strip()
-                        ]
-                    )
-                    if not st.session_state.get("current_opts") or set(
-                        st.session_state.get("current_opts", [])
-                    ) != set(parts):
-                        display_opts = list(parts)
+                    if st.session_state.get("current_opts") is None:
+                        display_opts = list(parts_check)
                         random.shuffle(display_opts)
                         st.session_state.current_opts = display_opts
 
-                    opts = st.session_state.current_opts
+                    opts = st.session_state.get("current_opts") or []
                     for i in range(0, len(opts), 8):
-                        cols = st.columns(8)  # ★ 1行に8つ並べる
-                        # --- 修正箇所（1056行目付近） ---
+                        cols = st.columns(8)
                         for j, word in enumerate(opts[i : i + 8]):
                             if user_ans.count(word) < opts.count(word):
-                                # 表示する時だけ $ を消す（replaceを追加）
                                 if cols[j].button(
-                                    to_pretty_display(
-                                        word
-                                    ),  # ← ここを replace ではなく関数名にする！
-                                    key="...",
+                                    to_pretty_display(word),
+                                    key=f"scr_{idx}_{i + j}",
                                     use_container_width=True,
                                 ):
                                     st.session_state["user_ans_order"].append(word)
                                     st.rerun()
 
                 elif is_two_choice:
-                    # --- [B] 2択クイズ ---
+                    # [B] 2択クイズ
                     st.write("▼ 正解を選択")
-                    cols = st.columns(8)  # レイアウト維持のため8列枠を使用
-                    for j, word in enumerate(clean_options):
+                    if st.session_state.get("current_opts") is None:
+                        opts_2 = list(clean_options)
+                        random.shuffle(opts_2)
+                        st.session_state.current_opts = opts_2
+
+                    opts = st.session_state.get("current_opts") or []
+                    cols = st.columns(8)
+                    correct_val = re.split(r"[/／]", str(ans_raw_str))[0].strip()
+                    for j, word in enumerate(opts):
                         if cols[j].button(
                             to_pretty_display(word),
-                            key=f"ch_{idx}_{i + j}",
+                            key=f"f2_{idx}_{j}",
                             use_container_width=True,
                         ):
-                            correct_val = re.split(r"[/／]", ans_raw_str)[0].strip()
-                            ok = word.lower().strip() == correct_val.lower().strip()
+
+                            def clean_s(t):
+                                return re.sub(r"[\$ ,.\?!\(\)/]", "", str(t)).lower()
+
+                            ok = clean_s(word) == clean_s(correct_val)
                             st.session_state.last_is_correct = ok
                             st.session_state.show_result = True
                             if ok:
@@ -2496,8 +2502,9 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                             )
                             queue_sound("correct.mp3" if ok else "wrong.mp3")
                             st.rerun()
+
                 else:
-                    # --- [C] 単語4択クイズ (マスク機能付き) ---
+                    # [C] 単語4択クイズ
                     if not st.session_state.get("show_options"):
                         if st.button(
                             "答えを表示する",
@@ -2505,38 +2512,37 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                             use_container_width=True,
                             type="secondary",
                         ):
+                            # シャッターを開ける瞬間に選択肢を固定
+                            if st.session_state.get("current_opts") is None:
+                                correct_val = str(ans_raw_str).split("/")[0].strip()
+                                dummy_raw = str(q.get("dummy", ""))
+                                all_dummies = [
+                                    d.strip()
+                                    for d in re.split(r"[,、]", dummy_raw)
+                                    if d.strip() and d != correct_val
+                                ]
+                                selected_dummies = random.sample(
+                                    all_dummies, min(len(all_dummies), 3)
+                                )
+                                opts_list = [correct_val] + selected_dummies
+                                random.shuffle(opts_list)
+                                st.session_state.current_opts = opts_list
                             st.session_state.show_options = True
                             st.rerun()
                     else:
-                        correct_val = ans_raw_str.split("/")[0].strip()
-                        dummy_raw = str(q.get("dummy", ""))
-                        all_dummies = [
-                            d.strip()
-                            for d in re.split(r"[,、]", dummy_raw)
-                            if d.strip() and d != correct_val
-                        ]
-                        selected_dummies = random.sample(
-                            all_dummies, min(len(all_dummies), 3)
-                        )
-                        opts_list = [correct_val] + selected_dummies
-
-                        if not st.session_state.get("current_opts") or set(
-                            st.session_state.get("current_opts", [])
-                        ) != set(opts_list):
-                            display_opts = list(opts_list)
-                            random.shuffle(display_opts)
-                            st.session_state.current_opts = display_opts
-
-                        cols = st.columns(8)  # ★ 1行8列の枠でボタンを配置
-                        for j, word in enumerate(st.session_state.current_opts):
-                            # 【ここを書き換え！】
-                            # word.replace("$", "") ではなく、to_pretty_display(word) を使います
+                        opts_to_show = st.session_state.get("current_opts") or []
+                        if not opts_to_show:
+                            st.session_state.current_opts = None
+                            st.rerun()
+                        cols = st.columns(8)
+                        correct_val = str(ans_raw_str).split("/")[0].strip()
+                        for j, word in enumerate(opts_to_show):
                             if cols[j].button(
                                 to_pretty_display(word),
                                 key=f"f4_{idx}_{j}",
                                 use_container_width=True,
                             ):
-                                # 判定ロジックは以前直した「$無視」のままでOKです
+
                                 def clean_s(t):
                                     return re.sub(
                                         r"[\$ ,.\?!\(\)/]", "", str(t)
@@ -2630,13 +2636,18 @@ else:  # --- 特訓モード：1行集約・点滅ゼロ・デバッグ対応版
                     res_btn_col = st.columns(2)
                     with res_btn_col[0]:
                         if st.button(
-                            "もう一度", key=f"nv_re_{idx}", use_container_width=True
+                            "もう一度", key=f"retry_{idx}", use_container_width=True
                         ):
-                            st.session_state.show_result = False
-                            st.session_state.show_options = False  # リセット
-                            st.session_state["user_ans_order"] = []
-                            st.session_state.current_opts = []
-                            st.rerun()
+                            # 【ここが重要】現在の問題の記憶をすべて強制的に消去する
+                            st.session_state["show_result"] = False
+                            st.session_state["show_options"] = False
+                            st.session_state["current_opts"] = (
+                                None  # これで選択肢が作り直される
+                            )
+                            st.session_state[
+                                "user_ans_order"
+                            ] = []  # 並べ替えの回答をリセット
+                            st.rerun()  # 即座に画面を書き換える
                     with res_btn_col[1]:
                         if st.button(
                             "次へ ➡️",
