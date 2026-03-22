@@ -513,7 +513,7 @@ def update_question_fields_batch(target_id, new_data):
 
         row_idx = ids.index(str(target_id)) + 1
 
-        # 書き換える値のリスト作成 (A列:カテゴリ, B:サブ, C:ランク, D:問題, E:正解, F:ヒント, G:ダミー)
+        # 書き換える値のリスト作成 (A〜Gの計7つ)
         update_values = [
             new_data.get("category", ""),
             new_data.get("sub_cat", ""),
@@ -524,16 +524,18 @@ def update_question_fields_batch(target_id, new_data):
             new_data.get("p_dummy", ""),
         ]
 
-        # A列(1)からG列(7)の範囲を一括更新
+        # 🌟 修正ポイント:
+        # update_valuesが7個なら、範囲も「AからG」にする必要があります。
+        # もしHまで広げるなら、update_valuesに8個目のデータを入れる必要があります。
         cell_range = f"A{row_idx}:G{row_idx}"
         sh.update(range_name=cell_range, values=[update_values])
         return True
     except Exception as e:
-        st.error(f"原本更新失敗: {e}")
+        print(f"Error: {e}")
         return False
 
 
-# single_fieldも一応同じ定義に合わせておきます
+# single_fieldもインデントを修正
 def update_question_single_field(q_id, field_name, new_value):
     col_map = {
         "category": "A",
@@ -549,6 +551,10 @@ def update_question_single_field(q_id, field_name, new_value):
         client = gspread.authorize(creds)
         sh = client.open("study_stats_db").worksheet("questions")
         id_col = sh.col_values(15)
+
+        if str(q_id) not in id_col:
+            return False
+
         row_idx = id_col.index(str(q_id)) + 1
         sh.update(range_name=f"{col_map[field_name]}{row_idx}", values=[[new_value]])
         return True
@@ -838,12 +844,25 @@ def batch_save_to_db(custom_mode=None, custom_qs=None):
 
                         m_updates.append({"range": f"C{row_m}", "values": [[ns]]})
                         m_updates.append({"range": f"E{row_m}", "values": [[today_ts]]})
-                        m_updates.append({"range": f"H{row_m}", "values": [[res_mark]]}) # 🌟 H列に結果を上書き
+                        m_updates.append(
+                            {"range": f"H{row_m}", "values": [[res_mark]]}
+                        )  # 🌟 H列に結果を上書き
                     else:
                         # 新規問題の追加ロジック (A:カテゴリ, B:問題, C:スコア, D:最終正解日, E:最終実施日, F:空, G:空, H:最新結果)
                         ns = 1 if is_correct else 0
                         last_correct = today_ts if is_correct else ""
-                        new_rows.append([cat_name, q_txt, ns, last_correct, today_ts, "", "", res_mark])
+                        new_rows.append(
+                            [
+                                cat_name,
+                                q_txt,
+                                ns,
+                                last_correct,
+                                today_ts,
+                                "",
+                                "",
+                                res_mark,
+                            ]
+                        )
 
                 # API制限を回避する一括処理
 
@@ -1375,19 +1394,36 @@ if not st.session_state.mode:
                                     [q_cat, q_text, "0", "0", "", q_ans, q_unit]
                                 )
 
+                        # --- 一括書き込み実行部分 ---
                         if new_mastery_list:
-                            last_row_old = len(m_all) + 100
-                            sh_m_ad.batch_clear([f"A2:G{last_row_old}"])
-                            sh_m_ad.update(
-                                range_name=f"A2:G{len(new_mastery_list) + 1}",
-                                values=new_mastery_list,
-                            )
+                            try:
+                                # 1. クリア処理（広範囲）
+                                last_row_old = len(m_all) + 200
+                                sh_m_ad.batch_clear([f"A2:Z{last_row_old}"])
 
-                        st.success(
-                            f"✨ 同期成功！ {len(new_mastery_list)} 件を更新しました。"
-                        )
+                                # 2. 列数自動判定
+                                num_cols = len(new_mastery_list[0])
+                                col_letter = (
+                                    chr(64 + num_cols) if num_cols <= 26 else "Z"
+                                )
+
+                                # 3. 一括アップデート
+                                target_range = (
+                                    f"A2:{col_letter}{len(new_mastery_list) + 1}"
+                                )
+                                sh_m_ad.update(
+                                    range_name=target_range,
+                                    values=new_mastery_list,
+                                    value_input_option="USER_ENTERED",
+                                )
+                                st.success(
+                                    f"✨ 同期成功！ {len(new_mastery_list)} 件を更新しました。"
+                                )
+                            except Exception as sub_e:
+                                st.error(f"書き込みエラー: {sub_e}")
+
                     except Exception as e:
-                        st.error(f"同期エラー: {e}")
+                        st.error(f"同期準備エラー: {e}")
 
             with col_ad2:
                 st.markdown("**🔎 データ監査（英語・超精密）**")
@@ -1517,7 +1553,12 @@ if not st.session_state.mode:
     # 🌟 本日の振り返り ＆ ワースト10 ＆ グラフUI
     # =============================================================================
     today_str = datetime.now(JST).strftime("%Y/%m/%d")
-    today_history = [h for h in db.get("history", []) if str(h.get("日付", "")).startswith(today_str) and str(h.get("削除フラグ", "")) != "1"]
+    today_history = [
+        h
+        for h in db.get("history", [])
+        if str(h.get("日付", "")).startswith(today_str)
+        and str(h.get("削除フラグ", "")) != "1"
+    ]
     today_mission_count = len(today_history)
 
     # 💡 答えを検索する便利関数
@@ -1528,82 +1569,106 @@ if not st.session_state.mode:
                     return str(item.get("a", ""))
         return "❓"
 
-    # 💡 Masteryデータの解析（今日の正誤＆全スコア集計）
+    # 💡 Masteryデータの解析
     today_corrects = []
     today_mistakes = []
     all_mastery_stats = []
-    score_dist = {0:0, 1:0, 2:0, 3:0, 4:0, 5:0}
+    score_dist = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
 
     for m in db.get("mastery", []):
         vals = list(m.values())
         q_txt = str(m.get("q", ""))
         score_val = str(m.get("score", "0"))
         score = int(score_val) if score_val.isdigit() else 0
-        
-        # グラフ用のスコア分布集計
+
         s_idx = min(score, 5)
         score_dist[s_idx] += 1
-        
-        # ワースト10用のリスト追加
         all_mastery_stats.append({"q": q_txt, "score": score})
 
-        # 今日の振り返り用
         if any(today_str in str(v) for v in vals):
             if "❌" in vals:
                 today_mistakes.append(q_txt)
             elif "⭕️" in vals:
                 today_corrects.append(q_txt)
 
-    # 💡 UI表示開始（タブで3つに分ける）
-    st.markdown(f"### 📊 学習ステータス (本日 {today_mission_count} セット完了)")
+    # -------------------------------------------------------------------------
+    # 💡 UI表示（ここから折りたたみ ＆ 未着手除外を適用）
+    # -------------------------------------------------------------------------
+    # 🌟 1. デフォルトで閉じる(expanded=False)設定
+    with st.expander(
+        f"📊 学習ステータス (本日 {today_mission_count} セット完了)", expanded=False
+    ):
+        tab1, tab2, tab3 = st.tabs(
+            ["📅 本日の振り返り", "📉 苦手ワースト10", "📈 習熟度グラフ"]
+        )
 
-    tab1, tab2, tab3 = st.tabs(["📅 本日の振り返り", "📉 苦手ワースト10", "📈 習熟度グラフ"])
+        with tab1:
+            if today_corrects or today_mistakes:
+                c_cor, c_mis = st.columns(2)
+                with c_cor:
+                    with st.expander(
+                        f"⭕️ 正解した問題 ({len(today_corrects)}問)", expanded=True
+                    ):
+                        for tq in today_corrects:
+                            ans = get_ans_for_q(tq)
+                            st.markdown(f"- {tq}  \n  **[答: {ans}]**")
+                with c_mis:
+                    with st.expander(
+                        f"❌ 間違えた問題 ({len(today_mistakes)}問)", expanded=True
+                    ):
+                        for tq in today_mistakes:
+                            ans = get_ans_for_q(tq)
+                            st.markdown(f"- {tq}  \n  **[答: {ans}]**")
+            else:
+                st.info("本日のプレイ記録はまだありません。")
 
-    with tab1:
-        if today_corrects or today_mistakes:
-            c_cor, c_mis = st.columns(2)
-            with c_cor:
-                with st.expander(f"⭕️ 正解した問題 ({len(today_corrects)}問)", expanded=True):
-                    for tq in today_corrects:
-                        ans = get_ans_for_q(tq)
-                        st.markdown(f"- {tq}  \n  **[答: {ans}]**")
-            with c_mis:
-                with st.expander(f"❌ 間違えた問題 ({len(today_mistakes)}問)", expanded=True):
-                    for tq in today_mistakes:
-                        ans = get_ans_for_q(tq)
-                        st.markdown(f"- {tq}  \n  **[答: {ans}]**")
-        else:
-            st.info("本日のプレイ記録はまだありません。（1回プレイして保存すると表示されます）")
+        with tab2:
+            # 🌟 2. ワースト10の抽出（スコア順に並べ替え）
+            all_mastery_stats.sort(key=lambda x: x["score"])
 
-    with tab2:
-        # ワースト10の抽出（スコアが低い順に並べ替え）
-        all_mastery_stats.sort(key=lambda x: x["score"])
-        worst_10 = all_mastery_stats[:10]
-        
-        if worst_10:
-            st.markdown("現在、最も習熟度スコアが低い（優先して復習すべき）問題トップ10です。")
-            for i, w in enumerate(worst_10):
-                w_ans = get_ans_for_q(w["q"])
-                st.markdown(f"**{i+1}位** (Lv.{w['score']}): {w['q']}  \n👉 **正解: {w_ans}**")
-                st.markdown("---")
-        else:
-            st.success("まだデータがありません。")
+            # 🌟 3. 【最終修正版】
+            # 条件①：last_date が空白ではない（＝一度は解いたことがある）
+            # 条件②：正解したことがない（＝全敗中、または一度も正解フラグが立っていない）
+            # 条件③：卒業(5)していない
+            worst_10 = [
+                w
+                for w in all_mastery_stats
+                if w.get("last_date", "") != ""
+                and w.get("correct_count", 0) == 0
+                and w["score"] < 5
+            ][:10]
 
-    with tab3:
-        st.markdown("現在のすべての問題の習熟度（Lv）ごとの問題数です。グラフの山が右（Lv.5）に移動していくのを目指しましょう！")
-        import pandas as pd
-        df_graph = pd.DataFrame({
-            "習熟度レベル": [
-                "Lv.0 🥚", 
-                "Lv.1 🔵", 
-                "Lv.2 🔵", 
-                "Lv.3 🟢", 
-                "Lv.4 🟢", 
-                "Lv.5 🔴"
-            ],
-            "問題数": [score_dist[i] for i in range(6)]
-        })
-        st.bar_chart(df_graph.set_index("習熟度レベル"))
+            if worst_10:
+                st.markdown(
+                    "⚠️ **一度は挑戦したけれど、まだ正解できていない苦手問題です。**"
+                )
+                for i, w in enumerate(worst_10):
+                    w_ans = get_ans_for_q(w["q"])
+                    st.markdown(
+                        f"**{i + 1}位** (Lv.{w['score']}): {w['q']}  \n👉 **正解: {w_ans}**"
+                    )
+                    st.markdown("---")
+            else:
+                st.success("現在、復習が必要な苦手問題はありません。素晴らしい！")
+
+        with tab3:
+            st.markdown("現在のすべての問題の習熟度分布です。")
+            import pandas as pd
+
+            df_graph = pd.DataFrame(
+                {
+                    "習熟度レベル": [
+                        "Lv.0 🥚",
+                        "Lv.1 🔵",
+                        "Lv.2 🔵",
+                        "Lv.3 🟢",
+                        "Lv.4 🟢",
+                        "Lv.5 🔴",
+                    ],
+                    "問題数": [score_dist[i] for i in range(6)],
+                }
+            )
+            st.bar_chart(df_graph.set_index("習熟度レベル"))
 
     st.divider()
 
@@ -1681,24 +1746,35 @@ if not st.session_state.mode:
 
                 for k, ql in all_q.items():
                     if subj != "すべて":
-                        target_pattern = f"{prefix}{year}{subj}" if year != "総合" else subj
-                        if target_pattern not in k: continue
-                    if year != "総合" and year not in k: continue
+                        target_pattern = (
+                            f"{prefix}{year}{subj}" if year != "総合" else subj
+                        )
+                        if target_pattern not in k:
+                            continue
+                    if year != "総合" and year not in k:
+                        continue
 
                     for q_item in ql:
                         q_text = str(q_item.get("q", "")).strip()
                         q_rank = str(q_item.get("rank", "B")).upper()
 
-                        if diff != "🌟 総合" and q_rank not in diff: continue
+                        if diff != "🌟 総合" and q_rank not in diff:
+                            continue
                         if fmt == "🧩 並べ替え特化":
-                            if not re.search(r"[\(（].*?[/／].*?[\)）]", q_text): continue
-                        
-                        if q_text in graduated: continue
-                        if q_text in recent_q_texts: continue
+                            if not re.search(r"[\(（].*?[/／].*?[\)）]", q_text):
+                                continue
 
-                        if q_rank == "A": pool_A.append(q_item)
-                        elif q_rank == "C": pool_C.append(q_item)
-                        else: pool_B.append(q_item)
+                        if q_text in graduated:
+                            continue
+                        if q_text in recent_q_texts:
+                            continue
+
+                        if q_rank == "A":
+                            pool_A.append(q_item)
+                        elif q_rank == "C":
+                            pool_C.append(q_item)
+                        else:
+                            pool_B.append(q_item)
 
                 # --- 3. 黄金比率による抽出 (A:15, B:12, C:3) ---
                 target_A, target_B, target_C = 15, 12, 3
@@ -1721,10 +1797,10 @@ if not st.session_state.mode:
 
                 # 🌟 【新規】ミス問題を最大5問ほど強制的にねじ込む
                 if mistake_pool:
-                    inject_count = min(len(mistake_pool), 5) # 最大5問まで復習
+                    inject_count = min(len(mistake_pool), 5)  # 最大5問まで復習
                     inject_items = random.sample(mistake_pool, inject_count)
                     # 先頭に追加しつつ、合計が30問になるように後ろを削る
-                    selection = inject_items + selection[:(30 - inject_count)]
+                    selection = inject_items + selection[: (30 - inject_count)]
 
                 random.shuffle(selection)  # 出題順をバラバラにする
 
@@ -1847,12 +1923,14 @@ if not st.session_state.mode:
                     a_val = str(q_item.get("a", ""))  # 🌟 答えを取得
 
                     # 🌟 答え(a_val)も合体させて、検索対象に含める！
-                    target_text = f"{cat_name} {sub_val} {q_val} {u_val} {a_val}".lower()
+                    target_text = (
+                        f"{cat_name} {sub_val} {q_val} {u_val} {a_val}".lower()
+                    )
 
                     # 🌟 修正：カテゴリ、サブカテゴリ、問題文、ユニット名をすべて合体させて検索対象にする
                     # （スペースで繋ぐことで、AND検索が正確に引っかかるようになります）
                     target_text = f"{cat_name} {sub_val} {q_val} {u_val}".lower()
-                    
+
                     clean_q = q_val.strip()
 
                     # 🚩 【重要】除外フィルター（卒業済み or 直近3回）
@@ -2477,10 +2555,19 @@ else:  # =========================================================
 
         else:
             # --- 英語・パズルモード（ホワイトボード機能） ---
-            # 1. データの準備
-            is_m_style = any(
-                kw in cat for kw in ["数学", "理科", "計算"]
-            ) or "$" in q.get("q", "")
+            all_text = str(q)
+
+            # 🌟 基本のキーワード
+            target_kws = ["数学", "物理", "化学", "地学"]
+            is_m_style = any(kw in all_text for kw in target_kws)
+
+            # 🌟 「計算」というワードでの判定（ヒントも含む）
+            # ただし、歴史（社会）という文字がA列にある時だけは「計算」で広げない
+            if "計算" in all_text:
+                if "歴史" not in cat and "社会" not in cat:
+                    is_m_style = True
+
+            # 2. 数値の決定
             c_h = 450 if is_m_style else 250
 
             # 🌟 2. ツール選択（キャンバスの「前」にあるので切り替えが速い）
