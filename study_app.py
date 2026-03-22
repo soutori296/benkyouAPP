@@ -2573,8 +2573,11 @@ else:  # =========================================================
                     "🔄 もう一度", key=f"retry_{idx}", use_container_width=True
                 ):
                     st.session_state.show_result = False
+                    st.session_state.show_options = (
+                        False  # 🌟 4択クイズのエラーを防ぐために追加！
+                    )
                     st.session_state.current_opts = None
-                    st.session_state.user_ans_order = []
+                    st.session_state["user_ans_order"] = []
                     st.rerun()
         with n_col[3]:  # 並べ替え消去
             if not is_kanji and is_scramble and not st.session_state.show_result:
