@@ -821,6 +821,9 @@ def batch_save_to_db(custom_mode=None, custom_qs=None):
                         continue
                     processed_qs.add(q_txt)
 
+                    # 🌟 新規：今回の結果をアイコン化
+                    res_mark = "⭕️" if is_correct else "❌"
+
                     if q_txt in m_dict:
                         # 既存問題の更新ロジック
                         row_m = m_dict[q_txt]["row"]
@@ -835,11 +838,14 @@ def batch_save_to_db(custom_mode=None, custom_qs=None):
 
                         m_updates.append({"range": f"C{row_m}", "values": [[ns]]})
                         m_updates.append({"range": f"E{row_m}", "values": [[today_ts]]})
+                        m_updates.append({"range": f"H{row_m}", "values": [[res_mark]]}) # 🌟 H列に結果を上書き
                     else:
-                        # 新規問題の追加ロジック (カテゴリ, 問題, スコア, 最終正解日, 最終実施日)
+                        # 新規問題の追加ロジック (A:カテゴリ, B:問題, C:スコア, D:最終正解日, E:最終実施日, F:空, G:空, H:最新結果)
                         ns = 1 if is_correct else 0
                         last_correct = today_ts if is_correct else ""
-                        new_rows.append([cat_name, q_txt, ns, last_correct, today_ts])
+                        new_rows.append([cat_name, q_txt, ns, last_correct, today_ts, "", "", res_mark])
+
+                # API制限を回避する一括処理
 
                 # API制限を回避する一括処理
                 if m_updates:
@@ -1240,7 +1246,7 @@ with st.sidebar:
     )
     st.text_input(
         "🗝️ 解除キー",
-        placeholder="key...",
+        placeholder="password...",
         key="parent_unlock_key",
         label_visibility="collapsed",
     )
@@ -1507,6 +1513,100 @@ if not st.session_state.mode:
                     st.toast("リストから削除しました")
                     st.rerun()
 
+    # =============================================================================
+    # 🌟 本日の振り返り ＆ ワースト10 ＆ グラフUI
+    # =============================================================================
+    today_str = datetime.now(JST).strftime("%Y/%m/%d")
+    today_history = [h for h in db.get("history", []) if str(h.get("日付", "")).startswith(today_str) and str(h.get("削除フラグ", "")) != "1"]
+    today_mission_count = len(today_history)
+
+    # 💡 答えを検索する便利関数
+    def get_ans_for_q(target_q):
+        for cat_list in all_q.values():
+            for item in cat_list:
+                if str(item.get("q", "")).strip() == target_q:
+                    return str(item.get("a", ""))
+        return "❓"
+
+    # 💡 Masteryデータの解析（今日の正誤＆全スコア集計）
+    today_corrects = []
+    today_mistakes = []
+    all_mastery_stats = []
+    score_dist = {0:0, 1:0, 2:0, 3:0, 4:0, 5:0}
+
+    for m in db.get("mastery", []):
+        vals = list(m.values())
+        q_txt = str(m.get("q", ""))
+        score_val = str(m.get("score", "0"))
+        score = int(score_val) if score_val.isdigit() else 0
+        
+        # グラフ用のスコア分布集計
+        s_idx = min(score, 5)
+        score_dist[s_idx] += 1
+        
+        # ワースト10用のリスト追加
+        all_mastery_stats.append({"q": q_txt, "score": score})
+
+        # 今日の振り返り用
+        if any(today_str in str(v) for v in vals):
+            if "❌" in vals:
+                today_mistakes.append(q_txt)
+            elif "⭕️" in vals:
+                today_corrects.append(q_txt)
+
+    # 💡 UI表示開始（タブで3つに分ける）
+    st.markdown(f"### 📊 学習ステータス (本日 {today_mission_count} セット完了)")
+
+    tab1, tab2, tab3 = st.tabs(["📅 本日の振り返り", "📉 苦手ワースト10", "📈 習熟度グラフ"])
+
+    with tab1:
+        if today_corrects or today_mistakes:
+            c_cor, c_mis = st.columns(2)
+            with c_cor:
+                with st.expander(f"⭕️ 正解した問題 ({len(today_corrects)}問)", expanded=True):
+                    for tq in today_corrects:
+                        ans = get_ans_for_q(tq)
+                        st.markdown(f"- {tq}  \n  **[答: {ans}]**")
+            with c_mis:
+                with st.expander(f"❌ 間違えた問題 ({len(today_mistakes)}問)", expanded=True):
+                    for tq in today_mistakes:
+                        ans = get_ans_for_q(tq)
+                        st.markdown(f"- {tq}  \n  **[答: {ans}]**")
+        else:
+            st.info("本日のプレイ記録はまだありません。（1回プレイして保存すると表示されます）")
+
+    with tab2:
+        # ワースト10の抽出（スコアが低い順に並べ替え）
+        all_mastery_stats.sort(key=lambda x: x["score"])
+        worst_10 = all_mastery_stats[:10]
+        
+        if worst_10:
+            st.markdown("現在、最も習熟度スコアが低い（優先して復習すべき）問題トップ10です。")
+            for i, w in enumerate(worst_10):
+                w_ans = get_ans_for_q(w["q"])
+                st.markdown(f"**{i+1}位** (Lv.{w['score']}): {w['q']}  \n👉 **正解: {w_ans}**")
+                st.markdown("---")
+        else:
+            st.success("まだデータがありません。")
+
+    with tab3:
+        st.markdown("現在のすべての問題の習熟度（Lv）ごとの問題数です。グラフの山が右（Lv.5）に移動していくのを目指しましょう！")
+        import pandas as pd
+        df_graph = pd.DataFrame({
+            "習熟度レベル": [
+                "Lv.0 🥚", 
+                "Lv.1 🔵", 
+                "Lv.2 🔵", 
+                "Lv.3 🟢", 
+                "Lv.4 🟢", 
+                "Lv.5 🔴"
+            ],
+            "問題数": [score_dist[i] for i in range(6)]
+        })
+        st.bar_chart(df_graph.set_index("習熟度レベル"))
+
+    st.divider()
+
     available_cats = sorted(list(all_q.keys()))
     col_gen1, col_gen2 = st.columns(2)
 
@@ -1567,7 +1667,6 @@ if not st.session_state.mode:
                     }
 
                     # ② 直近3回分の履歴（クールダウン）の取得
-                    # 履歴全体から直近3セッション分の問題ID/テキストを取得する
                     recent_q_texts = get_cooldown_questions(
                         db.get("history", []), cooldown=3
                     )
@@ -1581,56 +1680,52 @@ if not st.session_state.mode:
                 prefix = "_" if "漢字" in subj else ""
 
                 for k, ql in all_q.items():
-                    # カテゴリフィルタリング
                     if subj != "すべて":
-                        target_pattern = (
-                            f"{prefix}{year}{subj}" if year != "総合" else subj
-                        )
-                        if target_pattern not in k:
-                            continue
-
-                    # 学年フィルタリング
-                    if year != "総合" and year not in k:
-                        continue
+                        target_pattern = f"{prefix}{year}{subj}" if year != "総合" else subj
+                        if target_pattern not in k: continue
+                    if year != "総合" and year not in k: continue
 
                     for q_item in ql:
                         q_text = str(q_item.get("q", "")).strip()
                         q_rank = str(q_item.get("rank", "B")).upper()
 
-                        # 難易度フィルタ
-                        if diff != "🌟 総合" and q_rank not in diff:
-                            continue
-
-                        # 形式フィルタ（並べ替え特化）
+                        if diff != "🌟 総合" and q_rank not in diff: continue
                         if fmt == "🧩 並べ替え特化":
-                            if not re.search(r"[\(（].*?[/／].*?[\)）]", q_text):
-                                continue
+                            if not re.search(r"[\(（].*?[/／].*?[\)）]", q_text): continue
+                        
+                        if q_text in graduated: continue
+                        if q_text in recent_q_texts: continue
 
-                        # 🚩 【重要】卒業済みの除外
-                        if q_text in graduated:
-                            continue
-
-                        # 🚩 【重要】直近3回に出た問題の除外（クールダウン）
-                        if q_text in recent_q_texts:
-                            continue
-
-                        # ランク別にプールへ振り分け
-                        if q_rank == "A":
-                            pool_A.append(q_item)
-                        elif q_rank == "C":
-                            pool_C.append(q_item)
-                        else:
-                            pool_B.append(q_item)
+                        if q_rank == "A": pool_A.append(q_item)
+                        elif q_rank == "C": pool_C.append(q_item)
+                        else: pool_B.append(q_item)
 
                 # --- 3. 黄金比率による抽出 (A:15, B:12, C:3) ---
                 target_A, target_B, target_C = 15, 12, 3
 
-                # 安全にサンプリング（足りない場合はあるだけ取る）
+                # 🌟 【新規】3セット目以降なら、今日のミスを優先プールへ隔離
+                mistake_pool = []
+                if today_mission_count >= 2 and today_mistakes:
+                    for pool in [pool_A, pool_B, pool_C]:
+                        for q_item in pool[:]:  # コピーをループ
+                            if str(q_item.get("q", "")).strip() in today_mistakes:
+                                mistake_pool.append(q_item)
+                                pool.remove(q_item)  # 通常の抽選枠からは外す
+
+                # 安全にサンプリング
                 sel_A = random.sample(pool_A, min(len(pool_A), target_A))
                 sel_B = random.sample(pool_B, min(len(pool_B), target_B))
                 sel_C = random.sample(pool_C, min(len(pool_C), target_C))
 
                 selection = sel_A + sel_B + sel_C
+
+                # 🌟 【新規】ミス問題を最大5問ほど強制的にねじ込む
+                if mistake_pool:
+                    inject_count = min(len(mistake_pool), 5) # 最大5問まで復習
+                    inject_items = random.sample(mistake_pool, inject_count)
+                    # 先頭に追加しつつ、合計が30問になるように後ろを削る
+                    selection = inject_items + selection[:(30 - inject_count)]
+
                 random.shuffle(selection)  # 出題順をバラバラにする
 
                 # --- 4. ミッション起動と保存 ---
@@ -1748,7 +1843,16 @@ if not st.session_state.mode:
                 for q_item in q_list:
                     q_val = str(q_item.get("q", ""))
                     u_val = str(q_item.get("unit", ""))
-                    target_text = (cat_name + q_val + u_val).lower()
+                    sub_val = str(q_item.get("sub_category", ""))
+                    a_val = str(q_item.get("a", ""))  # 🌟 答えを取得
+
+                    # 🌟 答え(a_val)も合体させて、検索対象に含める！
+                    target_text = f"{cat_name} {sub_val} {q_val} {u_val} {a_val}".lower()
+
+                    # 🌟 修正：カテゴリ、サブカテゴリ、問題文、ユニット名をすべて合体させて検索対象にする
+                    # （スペースで繋ぐことで、AND検索が正確に引っかかるようになります）
+                    target_text = f"{cat_name} {sub_val} {q_val} {u_val}".lower()
+                    
                     clean_q = q_val.strip()
 
                     # 🚩 【重要】除外フィルター（卒業済み or 直近3回）
@@ -2153,9 +2257,9 @@ else:  # =========================================================
         # 🌟 ランクの変換処理を追加
         rank_raw = str(q.get("rank", "")).upper().strip()
         if rank_raw == "A":
-            rank_disp = "🔵必須"
+            rank_disp = "🟢必須"
         elif rank_raw == "B":
-            rank_disp = "🟢応用"
+            rank_disp = "🟡応用"
         elif rank_raw == "C":
             rank_disp = "🔴発展"
         else:
@@ -2208,16 +2312,36 @@ else:  # =========================================================
             )
             st.session_state.show_help_persistence = is_help_on
             h_c2.markdown(
-                "<div style='margin-top:5px; font-weight:bold; color:#4b5563; font-size:13px;'>💡ヒント</div>",
+                "<div style='margin-top:12px; margin-left:-20px; font-weight:bold; color:#4b5563; font-size:13px;'>💡ヒント</div>",
                 unsafe_allow_html=True,
             )
 
-        # スリム・ヒントバナー
+        # スリム・ヒントバナー（横幅拡大版）
         if is_help_on:
             h_t = q.get("h", "")
             clean_h = to_pretty_display(str(h_t).strip()) if h_t else "ヒントなし"
             st.markdown(
-                f"<div style='background-color:#e3f2fd; border-left:5px solid #2196f3; padding:4px 12px; border-radius:4px; color:#0d47a1; font-size:14px; margin-bottom:8px;'>💡 {clean_h}</div>",
+                f"""
+                <div style='
+                    background-color: #e3f2fd; 
+                    border-left: 5px solid #2196f3; 
+                    padding: 12px 20px; 
+                    border-radius: 6px; 
+                    color: #0d47a1; 
+                    font-size: 16px; 
+                    font-weight: bold; 
+                    margin-top: 15px;
+                    margin-bottom: 12px; 
+                    line-height: 0.8;
+                    /* 🌟 横幅の調整：fit-contentをやめて幅を指定します */
+                    display: block;        /* ブロック要素に戻す */
+                    width: 84.5%;            /* 🌟 ここで横幅を調整（Mission行に合わせるなら80-90%程度） */
+                    min-width: 300px;      /* 短すぎ防止 */
+                    box-shadow: 2px 2px 5px rgba(0,0,0,0.05);
+                '>
+                    💡 {clean_h}
+                </div>
+                """,
                 unsafe_allow_html=True,
             )
 
