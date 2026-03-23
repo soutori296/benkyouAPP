@@ -21,6 +21,21 @@ if "today_wrong_cards" not in st.session_state:
     st.session_state.today_wrong_cards = []
 
 
+def get_creds():
+    try:
+        if "gcp_service_account" in st.secrets:
+            return Credentials.from_service_account_info(
+                st.secrets["gcp_service_account"],
+                scopes=[
+                    "https://www.googleapis.com/auth/spreadsheets",
+                    "https://www.googleapis.com/auth/drive",
+                ],
+            )
+    except Exception:
+        pass
+    return None
+
+
 def queue_sound(file_path):
     # ファイルが存在するかチェック
     if os.path.exists(file_path):
@@ -60,58 +75,97 @@ def clean_text(text):
     return unicodedata.normalize("NFKC", str(text))
 
 
-# --- [作業員] 実際にシートを書き換える担当 ---
+# --- [1] 作業員：実際にシートを書き換える担当 ---
 def sync_timer_to_row2(added_seconds):
     try:
         from datetime import datetime
+        import re
 
         creds = get_creds()
         sh = gspread.authorize(creds).open("study_stats_db").worksheet("timer")
 
-        # 🌟 毎回C2を読みに行くのをやめ、前回の合計に足す
-        if "total_seconds_cached" not in st.session_state:
-            # 初回だけ読みに行く
-            val = sh.acell("C2").value
-            import re
+        row_data = sh.row_values(2)
+        # 🌟 修正：日付の形式（/ や -）を統一して比較する
+        raw_sheet_date = str(row_data[0]) if len(row_data) > 0 else ""
+        sheet_date = raw_sheet_date.replace("-", "/").strip()
 
-            numeric_val = re.sub(r"[^0-9]", "", str(val)) if val else "0"
-            st.session_state.total_seconds_cached = int(numeric_val)
+        today_obj = datetime.now()
+        today_str = today_obj.strftime("%Y/%m/%d")
 
-        new_total = st.session_state.total_seconds_cached + added_seconds
-        st.session_state.total_seconds_cached = new_total  # メモを更新
+        # 全累計（C2）
+        val_c = row_data[2] if len(row_data) > 2 else "0"
+        current_total = int(re.sub(r"[^0-9]", "", str(val_c))) if val_c else 0
 
-        today_str = datetime.now().strftime("%Y/%m/%d")
-        body = [[today_str, int(added_seconds), int(new_total)]]
+        # 🔥 日付チェックの強化
+        if sheet_date != today_str and sheet_date != "":
+            # 完全に別の日（昨日以前）の場合のみリセット
+            current_today_total = 0
+            print(f"🌅 日付が変わったためリセットします: {sheet_date} -> {today_str}")
+        else:
+            # 同じ日、または初回ならB2を読み込む
+            val_b = row_data[1] if len(row_data) > 1 else "0"
+            current_today_total = int(re.sub(r"[^0-9]", "", str(val_b))) if val_b else 0
 
-        # 書き込みのみ実行（読み取りを1回減らせます）
-        sh.update(range_name="A2:C2", values=body)
+        new_today_total = current_today_total + added_seconds
+        new_total = current_total + added_seconds
+
+        # 🌟 常に2行目だけを確実に上書き
+        sh.update(
+            range_name="A2:D2",
+            values=[
+                [today_str, int(new_today_total), int(new_total), int(added_seconds)]
+            ],
+        )
+
         return new_total
 
     except Exception as e:
-        print(f"Timer Save Error: {e}")
+        print(f"❌ Timer Error: {e}")
         return 0
 
 
-# --- [監督役] 5分判定をして、作業員に指示を出す担当 ---
+# --- [2] 監督役：時間を測って、作業員に指示を出す担当 ---
 def run_auto_timer_logic():
     import time
 
     now = time.time()
 
-    # 初回起動時の処理
+    # 初回起動時の初期化
     if "last_action_time" not in st.session_state:
         st.session_state.last_action_time = now
+        st.session_state.last_sync_time = now  # 🌟 追加：最後に書き込んだ時刻
+        st.session_state.unsynced_seconds = 0  # 🌟 追加：未同期の秒数
         return
 
-    last_time = st.session_state.last_action_time
-    duration = now - last_time
+    # 前回の操作からの経過時間を計算
+    duration = int(now - st.session_state.last_action_time)
 
-    # 🌟 5分(300秒)以内の操作なら、スプレッドシートを更新！
-    if 0 < duration < 300:
-        sync_timer_to_row2(int(duration))
+    # 放置判定（5分以上は何もしない）
+    if 5 <= duration < 300:
+        # 🌟 とりあえず「未同期分」としてアプリ内のメモに貯める
+        st.session_state.unsynced_seconds += duration
 
-    # 最後に動いた時間を更新
+        # 🌟 前回の「書き込み」から60秒以上経っているかチェック
+        time_since_sync = now - st.session_state.get("last_sync_time", 0)
+
+        if time_since_sync >= 60:
+            # 60秒経っていれば、溜まった分を一気に書き込む！
+            sync_timer_to_row2(st.session_state.unsynced_seconds)
+
+            # 書き込んだのでメモをリセット
+            st.session_state.unsynced_seconds = 0
+            st.session_state.last_sync_time = now
+            print(f"📡 Googleへまとめて送信しました。")
+        else:
+            print(
+                f"⏳ アプリ内で蓄積中... (現在: {st.session_state.unsynced_seconds}s)"
+            )
+
+    # 今回の操作時刻を記録
     st.session_state.last_action_time = now
+
+
+run_auto_timer_logic()
 
 
 def match_study_filter(search_query, q_item):
@@ -353,21 +407,6 @@ inject_muscular_styles()
 # =============================================================================
 
 
-def get_creds():
-    try:
-        if "gcp_service_account" in st.secrets:
-            return Credentials.from_service_account_info(
-                st.secrets["gcp_service_account"],
-                scopes=[
-                    "https://www.googleapis.com/auth/spreadsheets",
-                    "https://www.googleapis.com/auth/drive",
-                ],
-            )
-    except Exception:
-        pass
-    return None
-
-
 def format_time(total_seconds):
     h = total_seconds // 3600
     m = (total_seconds % 3600) // 60
@@ -377,61 +416,6 @@ def format_time(total_seconds):
         return f"{h}時間{m}分"
     else:
         return f"{m}分"
-
-
-def sync_timer(elapsed_to_add=0):
-    try:
-        creds = get_creds()
-        if not creds:
-            return 0
-        sh = gspread.authorize(creds).open("study_stats_db").worksheet("timer")
-        today_str = datetime.now(JST).strftime("%Y/%m/%d")
-
-        # 🌟 修正ポイント：シート全体の行数を数えてから処理を分岐する
-        raw_values = sh.get_all_values()
-
-        if len(raw_values) == 0:
-            # パターンA：完全に空っぽなら、ヘッダーを作ってからデータを追加
-            sh.append_row(["date", "seconds", "total"])
-            sh.append_row([today_str, elapsed_to_add, elapsed_to_add])
-            st.session_state.total_seconds = elapsed_to_add
-            return elapsed_to_add
-
-        elif len(raw_values) == 1:
-            # パターンB：ヘッダー（1行）だけあるなら、ヘッダーは作らずにデータだけ追加
-            sh.append_row([today_str, elapsed_to_add, elapsed_to_add])
-            st.session_state.total_seconds = elapsed_to_add
-            return elapsed_to_add
-
-        # パターンC：すでに過去のデータがある場合は、今まで通り処理する
-        records = sh.get_all_records()
-
-        db_sec = (
-            int(records[0].get("seconds", 0))
-            if str(records[0].get("seconds")).isdigit()
-            else 0
-        )
-        db_total = (
-            int(records[0].get("total", db_sec))
-            if str(records[0].get("total")).isdigit()
-            else db_sec
-        )
-
-        if str(records[0].get("date")) != today_str:
-            sh.insert_row([today_str, elapsed_to_add, db_total + elapsed_to_add], 2)
-            st.session_state.total_seconds = db_total + elapsed_to_add
-            return elapsed_to_add
-        else:
-            sh.update_cell(2, 2, db_sec + elapsed_to_add)
-            sh.update_cell(2, 3, db_total + elapsed_to_add)
-            st.session_state.total_seconds = db_total + elapsed_to_add
-            return db_sec + elapsed_to_add
-
-    except Exception:
-        st.session_state.total_seconds = (
-            st.session_state.get("total_seconds", 0) + elapsed_to_add
-        )
-        return st.session_state.get("daily_seconds", 0) + elapsed_to_add
 
 
 def assign_missing_ids():
@@ -884,7 +868,8 @@ def batch_save_to_db(custom_mode=None, custom_qs=None):
 
         # C. タイマー同期
         if st.session_state.get("unsynced_seconds", 0) > 0:
-            sync_timer(st.session_state.unsynced_seconds)
+            # 🌟 関数名を新しい「2行目上書き専用」のものに変更
+            sync_timer_to_row2(st.session_state.unsynced_seconds)
             st.session_state.unsynced_seconds = 0
 
         # D. 習熟度（Mastery）シートの更新（🌟新規追加＆一括更新の完全対応）
@@ -1222,7 +1207,8 @@ def init_session():
         if k not in st.session_state:
             st.session_state[k] = v
     if "daily_seconds" not in st.session_state:
-        st.session_state.daily_seconds = sync_timer(0)
+        # 新しい関数名「_to_row2」を使い、0秒加算（＝読み取りだけ）を行う
+        st.session_state.daily_seconds = sync_timer_to_row2(0)
 
 
 init_session()
@@ -1243,7 +1229,8 @@ if 0 < elapsed_t < 240:
 if st.session_state.unsynced_seconds >= 900:
     with st.sidebar:
         with st.spinner("⏳ 学習記録を自動保存中..."):
-            st.session_state.daily_seconds = sync_timer(
+            # 🌟 関数名を新しい「_to_row2」付きに変更！
+            st.session_state.daily_seconds = sync_timer_to_row2(
                 st.session_state.unsynced_seconds
             )
             st.session_state.unsynced_seconds = 0
@@ -3061,6 +3048,3 @@ else:  # =========================================================
 
 # 🔊 最後の一行
 execute_queued_sound()
-
-# 🌟 ファイルの一番最後にこの1行を書き足す！
-run_auto_timer_logic()
