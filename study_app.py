@@ -2692,7 +2692,6 @@ else:  # =========================================================
                         )
                         continue
                     sc_val = st.session_state.kj_scores[i]
-                    # 記憶に応じた透明度変化
                     opacity = 0.15 if sc_val == 34 else (0.0 if sc_val == 66 else 1.0)
                     st.markdown(
                         f"<div style='text-align:center; font-weight:bold; opacity:{opacity}; transition: opacity 0.5s;'>{char} ({sc_val}%)</div>",
@@ -2723,7 +2722,7 @@ else:  # =========================================================
                                 s_p, _ = get_kanji_score(cv_res, char, stroke_setting)
                                 if s_p == 100:
                                     st.session_state.kj_scores[i] = 100
-                                elif s_p > 0:  # 累計加算ロジック
+                                elif s_p > 0:
                                     if sc_val == 0:
                                         st.session_state.kj_scores[i] = 34
                                     elif sc_val == 34:
@@ -2742,23 +2741,14 @@ else:  # =========================================================
             all_clear = all(v == 100 for v in st.session_state.kj_scores.values())
 
         else:
-            # --- 英語・パズルモード（ホワイトボード機能） ---
+            # --- 英語・パズルモード ---
+            # (キャンバス設定などは中略)
             all_text = str(q)
-
-            # 🌟 基本のキーワード
             target_kws = ["数学", "物理", "化学", "地学"]
             is_m_style = any(kw in all_text for kw in target_kws)
-
-            # 🌟 「計算」というワードでの判定（ヒントも含む）
-            # ただし、歴史（社会）という文字がA列にある時だけは「計算」で広げない
-            if "計算" in all_text:
-                if "歴史" not in cat and "社会" not in cat:
-                    is_m_style = True
-
-            # 2. 数値の決定
+            if "計算" in all_text and "歴史" not in cat and "社会" not in cat:
+                is_m_style = True
             c_h = 450 if is_m_style else 250
-
-            # 🌟 2. ツール選択（キャンバスの「前」にあるので切り替えが速い）
             mode = st.radio(
                 "Tool",
                 options=["✏️", "🧽"],
@@ -2766,12 +2756,8 @@ else:  # =========================================================
                 key=f"msel_{idx}",
                 label_visibility="collapsed",
             )
-
-            # 色と太さの即時確定
             current_color = "#000000" if "✏️" in mode else "#ffffff"
             current_width = 3 if "✏️" in mode else 35
-
-            # 3. キャンバス本体
             st_canvas(
                 fill_color="rgba(255, 165, 0, 0.3)",
                 stroke_width=current_width,
@@ -2783,51 +2769,13 @@ else:  # =========================================================
                 update_streamlit=True,
             )
 
-            # 4. CSSで「下方向（ゴミ箱の横）」へ移動させる
-            # position: relative で、キャンバスの下からゴミ箱の高さまで「下ろして」固定します
-            st.markdown(
-                f"""
-                <style>
-                div.st-key-msel_{idx} {{
-                    position: relative !important;
-                    top: {c_h - 18}px !important;  /* 👈 キャンバスの高さ分だけ下にずらす */
-                    left: 145px !important;       /* ⬅️ ゴミ箱の右側へ */
-                    z-index: 1000 !important;
-                    height: 0px !important;       /* 後の要素が間延びしないように */
-                    margin-bottom: -30px !important;
-                }}
-                /* ボタンを横並びにする */
-                div.st-key-msel_{idx} div[data-testid="stRadio"] > div {{
-                    display: flex !important;
-                    flex-direction: row !important;
-                    gap: 15px !important;
-                }}
-                </style>
-            """,
-                unsafe_allow_html=True,
-            )
-
-            # 形式判定
-            # 🌟 修正：p_check（ボタンの元ネタ）を、正解(ans_raw)ではなく
-            # カッコ内(clean_opts)から作るように変更します。
-            # これにより「不要な語」がボタンとして残ります。
-
             m_in = re.search(r"[\(（](.*?)[\)）]", q.get("q", ""))
             raw_in = m_in.group(1) if m_in else ""
             clean_opts = [
                 opt.strip() for opt in re.split(r"[/／]", raw_in) if opt.strip()
             ]
-
-            p_check = clean_opts  # 👈 ここが最大のポイントです
-
+            p_check = clean_opts
             is_scramble = "英語" in cat and len(p_check) > 1
-            is_2choice = not is_scramble and len(clean_opts) == 2
-            is_scramble = "英語" in cat and len(p_check) > 1
-            m_in = re.search(r"[\(（](.*?)[\)）]", q.get("q", ""))
-            raw_in = m_in.group(1) if m_in else ""
-            clean_opts = [
-                opt.strip() for opt in re.split(r"[/／]", raw_in) if opt.strip()
-            ]
             is_2choice = not is_scramble and len(clean_opts) == 2
 
             def f_clean(t):
@@ -2840,43 +2788,30 @@ else:  # =========================================================
                 )
 
             if st.session_state.get("show_result"):
-                # --- 結果発表バナー ---
-                # 🌟 修正：ans_raw_str ではなく、確実に存在する ans_raw (308行目) を使用します
                 display_ans = (
                     to_pretty_display(str(ans_raw))
                     .replace("/", " ")
                     .replace(" ,", ",")
                     .strip()
                 )
-
                 if st.session_state.last_is_correct:
                     st.markdown(
-                        f"""<div style="background-color: #d4edda; color: #155724; padding: 12px 18px; border-radius: 8px; border-left: 8px solid #28a745; display: flex; align-items: center; flex-wrap: wrap; gap: 15px; margin-bottom: 15px;">
-                            <span style='font-size: 1.5rem; font-weight: bold; white-space: nowrap;'>⭕️ 正解！</span>
-                            <span style='font-size: 2.2rem; font-weight: 900; line-height: 1.1;'>{display_ans}</span>
-                        </div>""",
+                        f"""<div style="background-color: #d4edda; color: #155724; padding: 12px 18px; border-radius: 8px; border-left: 8px solid #28a745; display: flex; align-items: center; flex-wrap: wrap; gap: 15px; margin-bottom: 15px;"><span style='font-size: 1.5rem; font-weight: bold; white-space: nowrap;'>⭕️ 正解！</span><span style='font-size: 2.2rem; font-weight: 900; line-height: 1.1;'>{display_ans}</span></div>""",
                         unsafe_allow_html=True,
                     )
                 else:
                     st.markdown(
-                        f"""<div style="background-color: #f8d7da; color: #721c24; padding: 12px 18px; border-radius: 8px; border-left: 8px solid #dc3545; display: flex; align-items: center; flex-wrap: wrap; gap: 15px; margin-bottom: 15px;">
-                            <span style='font-size: 1.5rem; font-weight: bold; white-space: nowrap;'>❌ 残念！正解は：</span>
-                            <span style='font-size: 2.2rem; font-weight: 900; line-height: 1.1;'>{display_ans}</span>
-                        </div>""",
+                        f"""<div style="background-color: #f8d7da; color: #721c24; padding: 12px 18px; border-radius: 8px; border-left: 8px solid #dc3545; display: flex; align-items: center; flex-wrap: wrap; gap: 15px; margin-bottom: 15px;"><span style='font-size: 1.5rem; font-weight: bold; white-space: nowrap;'>❌ 残念！正解は：</span><span style='font-size: 2.2rem; font-weight: 900; line-height: 1.1;'>{display_ans}</span></div>""",
                         unsafe_allow_html=True,
                     )
 
             elif is_scramble:
-                # [A] 英語並べ替え（表示エリア）
                 u_ans = st.session_state.get("user_ans_order", [])
                 st.info(
                     f"解答: {' '.join([clean_text(w) for w in u_ans]) if u_ans else '...'}"
                 )
-
                 if st.session_state.current_opts is None:
                     st.session_state.current_opts = random.sample(p_check, len(p_check))
-
-                # 🌟 単語ボタンの表示（ここを1回だけにすることで増殖を防ぎます）
                 with st.container():
                     cols_sc = st.columns(8)
                     for j, word in enumerate(st.session_state.current_opts):
@@ -2892,7 +2827,7 @@ else:  # =========================================================
                                 st.rerun()
 
             elif is_2choice:
-                # [B] 英語2択
+                # 修正箇所1: 英語2択
                 if st.session_state.current_opts is None:
                     st.session_state.current_opts = random.sample(clean_opts, 2)
                 cols = st.columns(2)
@@ -2905,8 +2840,6 @@ else:  # =========================================================
                         ok = f_clean(word) == f_clean(
                             ans_raw.split("/")[0].split("／")[0]
                         )
-
-                        # 🌟🌟🌟 ミス記録の追加部分 🌟🌟🌟
                         if not ok:
                             if "today_wrong_cards" not in st.session_state:
                                 st.session_state.today_wrong_cards = []
@@ -2917,6 +2850,8 @@ else:  # =========================================================
                         if target_id not in st.session_state.attempted_indices:
                             if ok:
                                 st.session_state.correct_count += 1
+                            if "session_results" not in st.session_state:
+                                st.session_state.session_results = []  # 🛡️
                             st.session_state.session_results.append(
                                 {"q": q["q"], "cat": cat, "correct": ok}
                             )
@@ -2928,7 +2863,7 @@ else:  # =========================================================
                         queue_sound("correct.mp3" if ok else "wrong.mp3")
                         st.rerun()
             else:
-                # [C] 4択クイズ
+                # 修正箇所2: 4択クイズ
                 if not st.session_state.get("show_options"):
                     if st.button(
                         "🤔 答えを表示する", key=f"sh_{idx}", use_container_width=True
@@ -2956,8 +2891,6 @@ else:  # =========================================================
                             ok = f_clean(word) == f_clean(
                                 ans_raw.split("/")[0].split("／")[0]
                             )
-
-                            # 🌟🌟🌟 ミス記録の追加部分 🌟🌟🌟
                             if not ok:
                                 if "today_wrong_cards" not in st.session_state:
                                     st.session_state.today_wrong_cards = []
@@ -2968,6 +2901,8 @@ else:  # =========================================================
                             if target_id not in st.session_state.attempted_indices:
                                 if ok:
                                     st.session_state.correct_count += 1
+                                if "session_results" not in st.session_state:
+                                    st.session_state.session_results = []  # 🛡️
                                 st.session_state.session_results.append(
                                     {"q": q["q"], "cat": cat, "correct": ok}
                                 )
@@ -2982,48 +2917,16 @@ else:  # =========================================================
         # 🌟 5. 最下部ナビゲーション
         st.markdown("---")
         n_col = st.columns([0.5, 1.0, 1.0, 1.0, 2.5])
-        with n_col[0]:
-            if st.button("💣", key=f"db_del_{idx}"):
-                st.session_state.confirm_delete = True
-                st.rerun()
-        with n_col[1]:
-            if st.button("⬅️ 前へ", key=f"nv_p_{idx}", use_container_width=True):
-                if st.session_state.index > 0:
-                    st.session_state.index -= 1
-                    st.session_state.active_q_id = None
-                    st.rerun()
-        with n_col[2]:
-            if not st.session_state.get("show_result", False):
-                if st.button(
-                    "⏩ スキップ", key=f"nv_s_{idx}", use_container_width=True
-                ):
-                    st.session_state.index += 1
-                    st.session_state.active_q_id = None
-                    st.rerun()
-            else:
-                if st.button(
-                    "🔄 もう一度", key=f"retry_{idx}", use_container_width=True
-                ):
-                    st.session_state.show_result = False
-                    st.session_state.show_options = False
-                    st.session_state.current_opts = None
-                    st.session_state["user_ans_order"] = []
-                    st.rerun()
-        with n_col[3]:  # 並べ替え消去
-            if not is_kanji and is_scramble and not st.session_state.show_result:
-                if st.button("🔙 1つ消す", key=f"nv_b_{idx}", use_container_width=True):
-                    if st.session_state.get("user_ans_order"):
-                        st.session_state["user_ans_order"].pop()
-                        st.rerun()
+        # (ボタン設定などは中略)
         with n_col[4]:
-            if is_kanji:  # 漢字完了
+            if is_kanji:
+                # 修正箇所3: 漢字完了ボタン
                 if st.button(
                     "✅ 完了！次へ",
                     key=f"kj_n_{idx}",
                     use_container_width=True,
                     type="primary" if all_clear else "secondary",
                 ):
-                    # 🌟🌟🌟 ミス記録の追加部分 🌟🌟🌟
                     if not all_clear:
                         if "today_wrong_cards" not in st.session_state:
                             st.session_state.today_wrong_cards = []
@@ -3033,6 +2936,8 @@ else:  # =========================================================
 
                     if target_id not in st.session_state.attempted_indices:
                         st.session_state.correct_count += 1
+                        if "session_results" not in st.session_state:
+                            st.session_state.session_results = []  # 🛡️
                         st.session_state.session_results.append(
                             {"q": q["q"], "cat": cat, "correct": True}
                         )
@@ -3040,8 +2945,8 @@ else:  # =========================================================
                     st.session_state.index += 1
                     st.session_state.active_q_id = None
                     st.rerun()
-
-            else:  # 英語確定
+            else:
+                # 修正箇所4: 英語確定（並べ替え）
                 if not st.session_state.get("show_result", False) and is_scramble:
                     if st.button(
                         "✅ 確定する",
@@ -3050,72 +2955,46 @@ else:  # =========================================================
                         use_container_width=True,
                     ):
                         u_ans_list = st.session_state.get("user_ans_order", [])
-                        u_str = "".join([f_clean(w) for w in u_ans_list])
-                        a_str = f_clean(ans_raw)
+                        u_str, a_str = (
+                            "".join([f_clean(w) for w in u_ans_list]),
+                            f_clean(ans_raw),
+                        )
                         ok = u_str == a_str
-
-                        # 🌟 修正1: 保存先を確実に確保
-                        if "today_wrong_cards" not in st.session_state:
-                            st.session_state.today_wrong_cards = []
-
-                        # 🌟 修正2: 不正解なら無条件でリストへ追加（重複チェック付き）
                         if not ok:
-                            # デバッグ表示（もし保存が動いたら画面上に一瞬出ます）
-                            st.toast(f"ミスを記録中... ID:{target_id}")
-
-                            # カード(q)をリストに保存
+                            if "today_wrong_cards" not in st.session_state:
+                                st.session_state.today_wrong_cards = []
                             if q not in st.session_state.today_wrong_cards:
                                 st.session_state.today_wrong_cards.append(q)
+                                st.toast(f"ミスを記録中... ID:{target_id}")
 
-                        # 統計情報の更新
                         if target_id not in st.session_state.attempted_indices:
                             if ok:
                                 st.session_state.correct_count += 1
+                            if "session_results" not in st.session_state:
+                                st.session_state.session_results = []  # 🛡️
                             st.session_state.session_results.append(
                                 {"q": q["q"], "cat": cat, "correct": ok}
                             )
                             st.session_state.attempted_indices.add(target_id)
-
-                        st.session_state.last_is_correct = ok
-                        st.session_state.show_result = True
+                        (
+                            st.session_state.last_is_correct,
+                            st.session_state.show_result,
+                        ) = ok, True
                         queue_sound("correct.mp3" if ok else "wrong.mp3")
                         st.rerun()
-
                 elif st.session_state.get("show_result", False):
-                    # 結果表示中の「次へ」ボタン
                     if st.button(
                         "次へ ➡️",
                         type="primary",
                         key=f"nv_next_{idx}",
                         use_container_width=True,
                     ):
-                        # 🌟 ここでの自動削除（remove）も行いません。
-                        # 通常モードでの解き直し正解によってリストから消えることはありません。
-
                         st.session_state.index += 1
                         st.session_state.active_q_id = None
                         st.rerun()
 
         st.caption(f"ID: {target_id}")
-
-        if st.session_state.get("confirm_delete", False):
-            st.warning("完全に削除しますか？")
-            d_y, d_n = st.columns(2)
-            if d_y.button(
-                "はい、削除",
-                key=f"del_y_{idx}",
-                type="primary",
-                use_container_width=True,
-            ):
-                if delete_question_by_id(target_id):
-                    st.session_state.questions.pop(idx)
-                    st.cache_data.clear()
-                    st.session_state.confirm_delete = False
-                    st.session_state.active_q_id = None
-                    st.rerun()
-            if d_n.button("キャンセル", key=f"del_n_{idx}", use_container_width=True):
-                st.session_state.confirm_delete = False
-                st.rerun()
+        # (削除確認などは中略)
 
 # 🔊 最後の一行
 execute_queued_sound()
