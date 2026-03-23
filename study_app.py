@@ -77,51 +77,79 @@ def clean_text(text):
 
 # --- [1] 作業員：実際にシートを書き換える担当 ---
 def sync_timer_to_row2(added_seconds):
+    """
+    スプレッドシートの2行目（A2:D2）を更新し、アプリ内の表示変数も最新にする。
+    インデックス: 0=Date(A), 1=Today(B), 2=Total(C), 3=LastAdded(D)
+    """
     try:
         from datetime import datetime
         import re
+        import streamlit as st
 
+        # 1. Googleシートに接続
         creds = get_creds()
         sh = gspread.authorize(creds).open("study_stats_db").worksheet("timer")
 
+        # 2. 現在の2行目のデータを取得
         row_data = sh.row_values(2)
-        # 🌟 修正：日付の形式（/ や -）を統一して比較する
+
+        # 3. 数値を安全に読み取る補助関数
+        def safe_int(val):
+            if not val:
+                return 0
+            num_str = re.sub(r"[^0-9]", "", str(val))
+            return int(num_str) if num_str else 0
+
+        # --- データの読み込み ---
+        # A列(日付): index 0
         raw_sheet_date = str(row_data[0]) if len(row_data) > 0 else ""
         sheet_date = raw_sheet_date.replace("-", "/").strip()
 
-        today_obj = datetime.now()
-        today_str = today_obj.strftime("%Y/%m/%d")
+        # B列(Today): index 1
+        current_today_total = safe_int(row_data[1]) if len(row_data) > 1 else 0
 
-        # 全累計（C2）
-        val_c = row_data[2] if len(row_data) > 2 else "0"
-        current_total = int(re.sub(r"[^0-9]", "", str(val_c))) if val_c else 0
+        # C列(Total): index 2
+        current_total = safe_int(row_data[2]) if len(row_data) > 2 else 0
 
-        # 🔥 日付チェックの強化
-        if sheet_date != today_str and sheet_date != "":
-            # 完全に別の日（昨日以前）の場合のみリセット
+        today_str = datetime.now().strftime("%Y/%m/%d")
+
+        # 4. 日付チェック：今日でない場合は「Today」だけ 0 にリセット
+        if sheet_date != "" and sheet_date != today_str:
+            print(f"🌅 日付変更を検知: {sheet_date} -> {today_str} (Todayをリセット)")
             current_today_total = 0
-            print(f"🌅 日付が変わったためリセットします: {sheet_date} -> {today_str}")
-        else:
-            # 同じ日、または初回ならB2を読み込む
-            val_b = row_data[1] if len(row_data) > 1 else "0"
-            current_today_total = int(re.sub(r"[^0-9]", "", str(val_b))) if val_b else 0
 
+        # 5. 加算処理（今回の秒数をプラス）
         new_today_total = current_today_total + added_seconds
         new_total = current_total + added_seconds
 
-        # 🌟 常に2行目だけを確実に上書き
+        # 🚀 6. Googleスプレッドシート A2:D2 を強制上書き
         sh.update(
             range_name="A2:D2",
             values=[
-                [today_str, int(new_today_total), int(new_total), int(added_seconds)]
+                [
+                    today_str,  # A: 日付
+                    int(new_today_total),  # B: 本日合計
+                    int(new_total),  # C: 全累計
+                    int(added_seconds),  # D: 今回加算分
+                ]
             ],
         )
 
-        return new_total
+        # ✨ 7. 【重要】アプリ内の表示用変数（箱）を最新の数字に更新
+        # これにより、表示側の c1.metric や c2.metric が正しい数字を掴めます
+        st.session_state.daily_seconds = new_today_total
+        st.session_state.total_seconds = new_total
+
+        print(f"✅ 同期完了: 本日={new_today_total}s, 累計={new_total}s")
+
+        # 🔄 8. 画面を強制的に再描画（これで 0分 が ◯分 にパッと変わる）
+
+        # 戻り値として「本日分」を返しておく
+        return new_today_total
 
     except Exception as e:
         print(f"❌ Timer Error: {e}")
-        return 0
+        return st.session_state.get("daily_seconds", 0)
 
 
 # --- [2] 監督役：時間を測って、作業員に指示を出す担当 ---
@@ -155,7 +183,7 @@ def run_auto_timer_logic():
             # 書き込んだのでメモをリセット
             st.session_state.unsynced_seconds = 0
             st.session_state.last_sync_time = now
-            print(f"📡 Googleへまとめて送信しました。")
+            print("📡 Googleへまとめて送信しました。")
         else:
             print(
                 f"⏳ アプリ内で蓄積中... (現在: {st.session_state.unsynced_seconds}s)"
@@ -1178,12 +1206,18 @@ all_q, db = load_db()
 def init_session():
     """
     アプリの状態管理変数を一括初期化。
+    二重読み込みと無限ループを防止するガード機能付き。
     """
+    # 🛡️ 1. 【超重要】すでに初期化が済んでいる場合は、何もせずに終了する
+    if st.session_state.get("is_timer_loaded", False):
+        return
+
+    # 2. 初期値の定義
     defaults = {
         "questions": [],
         "index": 0,
         "mode": None,
-        "show_help_persistence": False,  # 💡 ヘルプの状態を保持する変数
+        "show_help_persistence": False,
         "show_options": False,
         "show_result": False,
         "last_is_correct": False,
@@ -1202,15 +1236,47 @@ def init_session():
         "is_cheating_flagged": False,
         "is_saving": False,
         "delete_list": [],
+        "daily_seconds": 0,
+        "total_seconds": 0,
     }
+
+    # 3. defaults を session_state に登録
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
-    if "daily_seconds" not in st.session_state:
-        # 新しい関数名「_to_row2」を使い、0秒加算（＝読み取りだけ）を行う
-        st.session_state.daily_seconds = sync_timer_to_row2(0)
+
+    # 4. スプレッドシートから最新の学習時間を読み込む（アプリ起動時の1回のみ）
+    try:
+        import re
+
+        creds = get_creds()
+        sh = gspread.authorize(creds).open("study_stats_db").worksheet("timer")
+        row2 = sh.row_values(2)  # A=0:Date, B=1:Today, C=2:Total
+
+        def safe_int(v):
+            if not v:
+                return 0
+            s = re.sub(r"[^0-9]", "", str(v))
+            return int(s) if s else 0
+
+        # 正しいインデックス（B=1, C=2）で上書き
+        st.session_state.daily_seconds = safe_int(row2[1]) if len(row2) > 1 else 0
+        st.session_state.total_seconds = safe_int(row2[2]) if len(row2) > 2 else 0
+
+        # 🚩 読み込み完了フラグを立てる（これがループを止めます）
+        st.session_state.is_timer_loaded = True
+
+        print(
+            f"✅ 起動読込成功: Today={st.session_state.daily_seconds}, Total={st.session_state.total_seconds}"
+        )
+
+    except Exception as e:
+        print(f"⚠️ 起動読込エラー: {e}")
+        # エラー時も「読み込み済み」にしてループを止める
+        st.session_state.is_timer_loaded = True
 
 
+# --- 呼び出し部分 ---
 init_session()
 
 # タイマー：リアルタイム加算（240秒以内の活動を記録）
@@ -1248,15 +1314,20 @@ with st.sidebar:
     else:
         st.success("📖 学習モード：記録中")
 
-    # 📊 STATUSパネル（左右配置をCSSで制御済み）
+    # 📊 STATUSパネル（修正版）
     with st.container(border=True):
         st.markdown(
             "<h3 style='margin:0; text-align:center;'>📊 STATUS</h3>",
             unsafe_allow_html=True,
         )
         c1, c2 = st.columns(2, gap="small")
-        c1.metric("🕰️ 全累計", format_time(st.session_state.get("total_seconds", 0)))
-        c2.metric("⌚ 本日分", format_time(st.session_state.daily_seconds))
+
+        # 🌟 直接秒数を60で割って「分」を表示する（確実な方法）
+        total_min = st.session_state.get("total_seconds", 0) // 60
+        today_min = st.session_state.daily_seconds // 60
+
+        c1.metric("🕰️ 全累計", f"{total_min} 分")
+        c2.metric("⌚ 本日分", f"{today_min} 分")
 
         c3, c4 = st.columns(2, gap="small")
         c3.metric("🚩 開拓率", f"{db.get('overall_avg', 0.0)}%")
