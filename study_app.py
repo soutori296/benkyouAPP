@@ -68,24 +68,26 @@ def sync_timer_to_row2(added_seconds):
         creds = get_creds()
         sh = gspread.authorize(creds).open("study_stats_db").worksheet("timer")
 
-        # 1. 今のC2（累計）を取得
-        try:
+        # 🌟 毎回C2を読みに行くのをやめ、前回の合計に足す
+        if "total_seconds_cached" not in st.session_state:
+            # 初回だけ読みに行く
             val = sh.acell("C2").value
-            current_total = int(val) if val else 0
-        except (ValueError, TypeError):  # 🌟 E722対策：具体的なエラーを指定
-            current_total = 0
+            import re
 
-        new_total = current_total + added_seconds
+            numeric_val = re.sub(r"[^0-9]", "", str(val)) if val else "0"
+            st.session_state.total_seconds_cached = int(numeric_val)
+
+        new_total = st.session_state.total_seconds_cached + added_seconds
+        st.session_state.total_seconds_cached = new_total  # メモを更新
+
         today_str = datetime.now().strftime("%Y/%m/%d")
+        body = [[today_str, int(added_seconds), int(new_total)]]
 
-        # 2. 2行目を強制上書き（gspread v3.x / v4.x 以降両対応の書き方）
-        # 3行目が増えないように range_name を明示
-        sh.update(range_name="A2:C2", values=[[today_str, added_seconds, new_total]])
-
+        # 書き込みのみ実行（読み取りを1回減らせます）
+        sh.update(range_name="A2:C2", values=body)
         return new_total
 
-    except Exception as e:  # 🌟 F841対策：e を使うように変更
-        # ログとしてターミナルに表示（画面を汚さず、F841を消す）
+    except Exception as e:
         print(f"Timer Save Error: {e}")
         return 0
 
@@ -3057,7 +3059,8 @@ else:  # =========================================================
                 st.session_state.confirm_delete = False
                 st.rerun()
 
-# 🌟 ファイルの一番最後にこの1行を書き足す！
-run_auto_timer_logic()
 # 🔊 最後の一行
 execute_queued_sound()
+
+# 🌟 ファイルの一番最後にこの1行を書き足す！
+run_auto_timer_logic()
