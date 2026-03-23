@@ -435,12 +435,25 @@ inject_muscular_styles()
 # =============================================================================
 
 
-def format_time(total_seconds):
-    h = total_seconds // 3600
+def format_time(total_seconds, is_today=False):
+    """
+    is_today=True の場合は、何分でも「◯分」と表示。
+    is_today=False（全累計）の場合は、
+    - 100時間未満: 「◯時間◯分」
+    - 100時間以上: 「◯.◯時間」（小数点第1位で四捨五入）
+    """
+    if is_today:
+        m = total_seconds // 60
+        return f"{m}分"
+
+    h_raw = total_seconds / 3600
+    if h_raw >= 100:
+        # 100時間以上の場合は 100.3時間 のような表記（四捨五入）
+        return f"{round(h_raw, 1)}時間"
+
+    h = int(h_raw)
     m = (total_seconds % 3600) // 60
-    if h >= 100:
-        return f"{h}時間"
-    elif h > 0:
+    if h > 0:
         return f"{h}時間{m}分"
     else:
         return f"{m}分"
@@ -1322,12 +1335,13 @@ with st.sidebar:
         )
         c1, c2 = st.columns(2, gap="small")
 
-        # 🌟 直接秒数を60で割って「分」を表示する（確実な方法）
-        total_min = st.session_state.get("total_seconds", 0) // 60
-        today_min = st.session_state.daily_seconds // 60
+        # 🌟 修正ポイント：format_time 関数を使って表示を出し分ける
+        total_sec = st.session_state.get("total_seconds", 0)
+        today_sec = st.session_state.daily_seconds
 
-        c1.metric("🕰️ 全累計", f"{total_min} 分")
-        c2.metric("⌚ 本日分", f"{today_min} 分")
+        # 全累計は第2引数なし（デフォルトFalse）、本日分はTrueを指定
+        c1.metric("🕰️ 全累計", format_time(total_sec))
+        c2.metric("⌚ 本日分", format_time(today_sec, is_today=True))
 
         c3, c4 = st.columns(2, gap="small")
         c3.metric("🚩 開拓率", f"{db.get('overall_avg', 0.0)}%")
