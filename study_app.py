@@ -1229,6 +1229,7 @@ def init_session():
     defaults = {
         "questions": [],
         "index": 0,
+        "balloons_done": False,
         "mode": None,
         "show_help_persistence": False,
         "show_options": False,
@@ -2021,15 +2022,33 @@ if not st.session_state.mode:
                                     mistake_pool.append(qi)
                                     p.remove(qi)
 
+                    # 1. まずは各ランクから可能な限り抽出
                     sel_A = random.sample(pool_A, min(len(pool_A), target_A))
                     sel_B = random.sample(pool_B, min(len(pool_B), target_B))
                     sel_C = random.sample(pool_C, min(len(pool_C), target_C))
                     selection = sel_A + sel_B + sel_C
+
+                    # 🌟 2. 不足分を他のランクから補充（バランス調整）
+                    if len(selection) < 30:
+                        # まだ選ばれていない残りの全問題を一つにまとめる
+                        remaining_pool = [
+                            q for q in (pool_A + pool_B + pool_C) if q not in selection
+                        ]
+                        needed = 30 - len(selection)
+                        # 残りがある分だけ補充する
+                        extra = random.sample(
+                            remaining_pool, min(len(remaining_pool), needed)
+                        )
+                        selection.extend(extra)
+
+                    # 3. ミス復習分の注入（既存ロジック）
                     if mistake_pool:
                         inject = random.sample(mistake_pool, min(len(mistake_pool), 5))
+                        # 注入分を考慮して全体のバランスを整える
                         selection = inject + selection[: (30 - len(inject))]
 
                 random.shuffle(selection)
+                # 検索時は全件、通常時は最大30問で確定
                 final_selection = selection if is_searching else selection[:30]
 
                 if final_selection:
@@ -2491,7 +2510,11 @@ else:  # =========================================================
 
     # --- [A] 全問終了時の画面 ---
     if idx >= len(qs):
-        st.balloons()
+        # 🌟 演出フラグ：まだバルーンを出していない場合だけ実行
+        if not st.session_state.get("balloons_done", False):
+            st.balloons()
+            st.session_state.balloons_done = True
+
         st.title("MISSION COMPLETE!")
         sc = (
             round((st.session_state.correct_count / len(qs)) * 100, 1)
@@ -2513,6 +2536,8 @@ else:  # =========================================================
             st.session_state.current_opts = None
             st.session_state["user_ans_order"] = []
             st.session_state.active_q_id = None
+            # 🌟 解き直すときはバルーンフラグもリセットして、次回の完了時にまた出るようにする
+            st.session_state.balloons_done = False
             st.rerun()
 
         if c_sv.button(
@@ -2520,6 +2545,8 @@ else:  # =========================================================
         ):
             batch_save_to_db()
             st.session_state.mode = None
+            # 🌟 ホームに戻る際もフラグをリセット
+            st.session_state.balloons_done = False
             st.rerun()
 
     # --- [B] クイズ実行中の画面 ---
@@ -2755,41 +2782,84 @@ else:  # =========================================================
             all_clear = all(v == 100 for v in st.session_state.kj_scores.values())
 
         else:
-            # --- 英語・パズルモード ---
-            # (キャンバス設定などは中略)
+            # --- 英語・パズルモード（枠なし・透明・スライド配置版） ---
             all_text = str(q)
             target_kws = ["数学", "物理", "化学", "地学"]
             is_m_style = any(kw in all_text for kw in target_kws)
             if "計算" in all_text and "歴史" not in cat and "社会" not in cat:
                 is_m_style = True
-            c_h = 450 if is_m_style else 250
-            mode = st.radio(
-                "Tool",
-                options=["✏️", "🧽"],
-                horizontal=True,
-                key=f"msel_{idx}",
-                label_visibility="collapsed",
-            )
-            current_color = "#000000" if "✏️" in mode else "#ffffff"
-            current_width = 3 if "✏️" in mode else 35
+
+            c_h = 400 if is_m_style else 250
+
+            # 🌟 1. ツールのID名（tool_key）を定義し、選択状態を取得する
+            tool_key = f"msel_{idx}"
+            current_tool = st.session_state.get(tool_key, "✏️")
+            current_color = "#000000" if "✏️" in current_tool else "#ffffff"
+            current_width = 3 if "✏️" in current_tool else 35
+
+            # 🌟 2. キャンバスを描く（※ファイル内にこれ1つだけになります）
             st_canvas(
                 fill_color="rgba(255, 165, 0, 0.3)",
                 stroke_width=current_width,
                 stroke_color=current_color,
+                background_color="#ffffff",  # 消しゴム用に白固定
                 height=c_h,
                 width=1050,
                 drawing_mode="freedraw",
+                display_toolbar=True,  # 🗑️ ゴミ箱アイコン等を表示
                 key=f"dyn_cv_{idx}",
                 update_streamlit=True,
             )
 
+            # 🌟 3. キャンバスの直後にボタンを作る
+            st.radio(
+                "Tool",
+                options=["✏️", "🧽"],
+                horizontal=True,
+                label_visibility="collapsed",
+                key=tool_key,
+            )
+
+            # 🌟 4. CSS（枠なし・透明化・スライド移動）
+            st.markdown(
+                f"""
+                <style>
+                div.st-key-{tool_key} {{
+                    transform: translate(135px, -55px) !important;
+                    width: fit-content !important;
+                    z-index: 9999 !important;
+                    margin-bottom: -45px !important; 
+                }}
+                div.st-key-{tool_key} div[data-testid="stRadio"] > div {{
+                    background: transparent !important; 
+                    border: none !important;            
+                    box-shadow: none !important;        
+                    padding: 0px !important;            
+                    gap: 5px !important;                
+                }}
+                div.st-key-{tool_key} label {{
+                    margin: 0 !important;
+                    padding: 0px 2px !important;
+                    min-height: 0 !important;
+                    background: transparent !important;
+                }}
+                </style>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            # --- 形式判定（ここから下は f_clean に繋がります） ---
+            p_check = [
+                w.strip()
+                for w in re.split(r"[/／\s]+", clean_text(ans_raw))
+                if w.strip()
+            ]
+            is_scramble = "英語" in cat and len(p_check) > 1
             m_in = re.search(r"[\(（](.*?)[\)）]", q.get("q", ""))
             raw_in = m_in.group(1) if m_in else ""
             clean_opts = [
                 opt.strip() for opt in re.split(r"[/／]", raw_in) if opt.strip()
             ]
-            p_check = clean_opts
-            is_scramble = "英語" in cat and len(p_check) > 1
             is_2choice = not is_scramble and len(clean_opts) == 2
 
             def f_clean(t):
@@ -2810,12 +2880,12 @@ else:  # =========================================================
                 )
                 if st.session_state.last_is_correct:
                     st.markdown(
-                        f"""<div style="background-color: #d4edda; color: #155724; padding: 12px 18px; border-radius: 8px; border-left: 8px solid #28a745; display: flex; align-items: center; flex-wrap: wrap; gap: 15px; margin-bottom: 15px;"><span style='font-size: 1.5rem; font-weight: bold; white-space: nowrap;'>⭕️ 正解！</span><span style='font-size: 2.2rem; font-weight: 900; line-height: 1.1;'>{display_ans}</span></div>""",
+                        f"""<div style="background-color: #d4edda; color: #155724; padding: 8px 12px; border-radius: 6px; border-left: 5px solid #28a745; display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 10px;"><span style='font-size: 1.1rem; font-weight: bold; white-space: nowrap;'>⭕️ 正解！</span><span style='font-size: 1.6rem; font-weight: 900; line-height: 1.1;'>{display_ans}</span></div>""",
                         unsafe_allow_html=True,
                     )
                 else:
                     st.markdown(
-                        f"""<div style="background-color: #f8d7da; color: #721c24; padding: 12px 18px; border-radius: 8px; border-left: 8px solid #dc3545; display: flex; align-items: center; flex-wrap: wrap; gap: 15px; margin-bottom: 15px;"><span style='font-size: 1.5rem; font-weight: bold; white-space: nowrap;'>❌ 残念！正解は：</span><span style='font-size: 2.2rem; font-weight: 900; line-height: 1.1;'>{display_ans}</span></div>""",
+                        f"""<div style="background-color: #f8d7da; color: #721c24; padding: 8px 12px; border-radius: 6px; border-left: 5px solid #dc3545; display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 10px;"><span style='font-size: 1.1rem; font-weight: bold; white-space: nowrap;'>❌ 残念！正解は：</span><span style='font-size: 1.6rem; font-weight: 900; line-height: 1.1;'>{display_ans}</span></div>""",
                         unsafe_allow_html=True,
                     )
 
