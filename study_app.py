@@ -68,22 +68,25 @@ def sync_timer_to_row2(added_seconds):
         creds = get_creds()
         sh = gspread.authorize(creds).open("study_stats_db").worksheet("timer")
 
-        # 現在の累計（C2）を取得
+        # 1. 今のC2（累計）を取得
         try:
-            current_total = int(sh.acell("C2").value or 0)
-        except Exception:
+            val = sh.acell("C2").value
+            current_total = int(val) if val else 0
+        except (ValueError, TypeError):  # 🌟 E722対策：具体的なエラーを指定
             current_total = 0
 
         new_total = current_total + added_seconds
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        today_str = datetime.now().strftime("%Y/%m/%d")
 
-        # A2:C2を一括で上書き
-        sh.update("A2:C2", [[today_str, added_seconds, new_total]])
+        # 2. 2行目を強制上書き（gspread v3.x / v4.x 以降両対応の書き方）
+        # 3行目が増えないように range_name を明示
+        sh.update(range_name="A2:C2", values=[[today_str, added_seconds, new_total]])
+
         return new_total
-    except Exception as e:
-        st.error(
-            f"⚠️ 保存エラーが発生しました: {e}"
-        )  # 🌟 ここで「e」を使えば警告は消えます！
+
+    except Exception as e:  # 🌟 F841対策：e を使うように変更
+        # ログとしてターミナルに表示（画面を汚さず、F841を消す）
+        print(f"Timer Save Error: {e}")
         return 0
 
 
@@ -3058,4 +3061,3 @@ else:  # =========================================================
 run_auto_timer_logic()
 # 🔊 最後の一行
 execute_queued_sound()
-
