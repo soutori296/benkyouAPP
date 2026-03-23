@@ -2914,13 +2914,59 @@ else:  # =========================================================
                             queue_sound("correct.mp3" if ok else "wrong.mp3")
                             st.rerun()
 
-        # 🌟 5. 最下部ナビゲーション
+        # 🌟 5. 最下部ナビゲーション (修正・復旧版)
         st.markdown("---")
         n_col = st.columns([0.5, 1.0, 1.0, 1.0, 2.5])
-        # (ボタン設定などは中略)
+
+        # 左端：削除ボタン
+        with n_col[0]:
+            if st.button("💣", key=f"db_del_{idx}"):
+                st.session_state.confirm_delete = True
+                st.rerun()
+
+        # 2番目：前へ
+        with n_col[1]:
+            if st.button("⬅️ 前へ", key=f"nv_p_{idx}", use_container_width=True):
+                if st.session_state.index > 0:
+                    st.session_state.index -= 1
+                    st.session_state.active_q_id = None
+                    st.rerun()
+
+        # 3番目：スキップ または もう一度
+        with n_col[2]:
+            if not st.session_state.get("show_result", False):
+                if st.button(
+                    "⏩ スキップ", key=f"nv_s_{idx}", use_container_width=True
+                ):
+                    st.session_state.index += 1
+                    st.session_state.active_q_id = None
+                    st.rerun()
+            else:
+                if st.button(
+                    "🔄 もう一度", key=f"retry_{idx}", use_container_width=True
+                ):
+                    st.session_state.show_result = False
+                    st.session_state.show_options = False
+                    st.session_state.current_opts = None
+                    st.session_state["user_ans_order"] = []
+                    st.rerun()
+
+        # 4番目：並べ替えの1つ消すボタン
+        with n_col[3]:
+            if (
+                not is_kanji
+                and is_scramble
+                and not st.session_state.get("show_result", False)
+            ):
+                if st.button("🔙 1つ消す", key=f"nv_b_{idx}", use_container_width=True):
+                    if st.session_state.get("user_ans_order"):
+                        st.session_state["user_ans_order"].pop()
+                        st.rerun()
+
+        # 5番目（右端）：確定 または 次へ
         with n_col[4]:
             if is_kanji:
-                # 修正箇所3: 漢字完了ボタン
+                # 漢字モードの完了ボタン
                 if st.button(
                     "✅ 完了！次へ",
                     key=f"kj_n_{idx}",
@@ -2932,69 +2978,91 @@ else:  # =========================================================
                             st.session_state.today_wrong_cards = []
                         if q not in st.session_state.today_wrong_cards:
                             st.session_state.today_wrong_cards.append(q)
-                            st.toast(f"ミスを記録中... ID:{target_id}")
 
                     if target_id not in st.session_state.attempted_indices:
-                        st.session_state.correct_count += 1
                         if "session_results" not in st.session_state:
-                            st.session_state.session_results = []  # 🛡️
+                            st.session_state.session_results = []
                         st.session_state.session_results.append(
                             {"q": q["q"], "cat": cat, "correct": True}
                         )
                         st.session_state.attempted_indices.add(target_id)
+                        st.session_state.correct_count += 1
+
                     st.session_state.index += 1
                     st.session_state.active_q_id = None
                     st.rerun()
-            else:
-                # 修正箇所4: 英語確定（並べ替え）
-                if not st.session_state.get("show_result", False) and is_scramble:
-                    if st.button(
-                        "✅ 確定する",
-                        type="primary",
-                        key=f"nv_fix_{idx}",
-                        use_container_width=True,
-                    ):
-                        u_ans_list = st.session_state.get("user_ans_order", [])
-                        u_str, a_str = (
-                            "".join([f_clean(w) for w in u_ans_list]),
-                            f_clean(ans_raw),
-                        )
-                        ok = u_str == a_str
-                        if not ok:
-                            if "today_wrong_cards" not in st.session_state:
-                                st.session_state.today_wrong_cards = []
-                            if q not in st.session_state.today_wrong_cards:
-                                st.session_state.today_wrong_cards.append(q)
-                                st.toast(f"ミスを記録中... ID:{target_id}")
 
-                        if target_id not in st.session_state.attempted_indices:
-                            if ok:
-                                st.session_state.correct_count += 1
-                            if "session_results" not in st.session_state:
-                                st.session_state.session_results = []  # 🛡️
-                            st.session_state.session_results.append(
-                                {"q": q["q"], "cat": cat, "correct": ok}
-                            )
-                            st.session_state.attempted_indices.add(target_id)
-                        (
-                            st.session_state.last_is_correct,
-                            st.session_state.show_result,
-                        ) = ok, True
-                        queue_sound("correct.mp3" if ok else "wrong.mp3")
-                        st.rerun()
-                elif st.session_state.get("show_result", False):
-                    if st.button(
-                        "次へ ➡️",
-                        type="primary",
-                        key=f"nv_next_{idx}",
-                        use_container_width=True,
-                    ):
-                        st.session_state.index += 1
-                        st.session_state.active_q_id = None
-                        st.rerun()
+            elif st.session_state.get("show_result", False):
+                # 解答済みなら常に「次へ ➡️」を表示
+                if st.button(
+                    "次へ ➡️",
+                    type="primary",
+                    key=f"nv_next_{idx}",
+                    use_container_width=True,
+                ):
+                    st.session_state.index += 1
+                    st.session_state.active_q_id = None
+                    st.rerun()
+
+            elif is_scramble:
+                # 並べ替えモードかつ未回答の時のみ「確定する」を表示
+                if st.button(
+                    "✅ 確定する",
+                    type="primary",
+                    key=f"nv_fix_{idx}",
+                    use_container_width=True,
+                ):
+                    u_ans_list = st.session_state.get("user_ans_order", [])
+                    u_str, a_str = (
+                        "".join([f_clean(w) for w in u_ans_list]),
+                        f_clean(ans_raw),
+                    )
+                    ok = u_str == a_str
+
+                    if not ok:
+                        if "today_wrong_cards" not in st.session_state:
+                            st.session_state.today_wrong_cards = []
+                        if q not in st.session_state.today_wrong_cards:
+                            st.session_state.today_wrong_cards.append(q)
+
+                    if target_id not in st.session_state.attempted_indices:
+                        if ok:
+                            st.session_state.correct_count += 1
+                        if "session_results" not in st.session_state:
+                            st.session_state.session_results = []
+                        st.session_state.session_results.append(
+                            {"q": q["q"], "cat": cat, "correct": ok}
+                        )
+                        st.session_state.attempted_indices.add(target_id)
+
+                    st.session_state.last_is_correct, st.session_state.show_result = (
+                        ok,
+                        True,
+                    )
+                    queue_sound("correct.mp3" if ok else "wrong.mp3")
+                    st.rerun()
 
         st.caption(f"ID: {target_id}")
-        # (削除確認などは中略)
+
+        # 削除確認ダイアログ (修正なし)
+        if st.session_state.get("confirm_delete", False):
+            st.warning("完全に削除しますか？")
+            d_y, d_n = st.columns(2)
+            if d_y.button(
+                "はい、削除",
+                key=f"del_y_{idx}",
+                type="primary",
+                use_container_width=True,
+            ):
+                if delete_question_by_id(target_id):
+                    st.session_state.questions.pop(idx)
+                    st.cache_data.clear()
+                    st.session_state.confirm_delete = False
+                    st.session_state.active_q_id = None
+                    st.rerun()
+            if d_n.button("キャンセル", key=f"del_n_{idx}", use_container_width=True):
+                st.session_state.confirm_delete = False
+                st.rerun()
 
 # 🔊 最後の一行
 execute_queued_sound()
