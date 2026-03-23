@@ -60,6 +60,55 @@ def clean_text(text):
     return unicodedata.normalize("NFKC", str(text))
 
 
+# --- [作業員] 実際にシートを書き換える担当 ---
+def sync_timer_to_row2(added_seconds):
+    try:
+        from datetime import datetime
+
+        creds = get_creds()
+        sh = gspread.authorize(creds).open("study_stats_db").worksheet("timer")
+
+        # 現在の累計（C2）を取得
+        try:
+            current_total = int(sh.acell("C2").value or 0)
+        except Exception:
+            current_total = 0
+
+        new_total = current_total + added_seconds
+        today_str = datetime.now().strftime("%Y-%m-%d")
+
+        # A2:C2を一括で上書き
+        sh.update("A2:C2", [[today_str, added_seconds, new_total]])
+        return new_total
+    except Exception as e:
+        st.error(
+            f"⚠️ 保存エラーが発生しました: {e}"
+        )  # 🌟 ここで「e」を使えば警告は消えます！
+        return 0
+
+
+# --- [監督役] 5分判定をして、作業員に指示を出す担当 ---
+def run_auto_timer_logic():
+    import time
+
+    now = time.time()
+
+    # 初回起動時の処理
+    if "last_action_time" not in st.session_state:
+        st.session_state.last_action_time = now
+        return
+
+    last_time = st.session_state.last_action_time
+    duration = now - last_time
+
+    # 🌟 5分(300秒)以内の操作なら、スプレッドシートを更新！
+    if 0 < duration < 300:
+        sync_timer_to_row2(int(duration))
+
+    # 最後に動いた時間を更新
+    st.session_state.last_action_time = now
+
+
 def match_study_filter(search_query, q_item):
     # --- あなたが提示したコード（これでOK） ---
     if not search_query:
@@ -1924,20 +1973,57 @@ if not st.session_state.mode:
                 "特訓教科", ["すべて"] + available_cats, key="w_subj_sel"
             )
 
-            # --- [1] 特訓ボタン ---
+            # --- [1] 特訓ボタン（タブ名 mastery 対応版） ---
             if st.button(
                 "特訓を開始！",
                 use_container_width=True,
                 key="start_tokkun",
                 type="primary",
             ):
-                # (ここにはスプレッドシートから未習得を読み込む処理が入ります)
-                # ※既存のロジックをそのまま維持
-                pass  # (実際のコードではここにご自身の特訓ロジックが入ります)
+                try:
+                    # スプレッドシートから全問題を読み込む
+                    creds = get_creds()
+                    # 🌟 ここを mastery に修正しました
+                    sh_master = (
+                        gspread.authorize(creds)
+                        .open("study_stats_db")
+                        .worksheet("mastery")
+                    )
+                    all_data = sh_master.get_all_records()
 
-            # --- [2] 🌟 本日の締め・おさらい（シンプル版） ---
+                    # 1. 選択された教科で絞り込み
+                    if w_subj != "すべて":
+                        filtered = [d for d in all_data if d.get("category") == w_subj]
+                    else:
+                        filtered = all_data
+
+                    # 2. 「未習得」のものだけを抽出（status列が"習得"ではないもの）
+                    # 🌟 status列の値を文字列として判定
+                    tokkun_questions = [
+                        d for d in filtered if str(d.get("status")) != "習得"
+                    ]
+
+                    if not tokkun_questions:
+                        st.warning(f"✨ {w_subj} の未習得問題はありません！完璧です！")
+                    else:
+                        # セッション状態を初期化して特訓開始
+                        import random
+
+                        random.shuffle(tokkun_questions)
+                        st.session_state.questions = tokkun_questions
+                        st.session_state.index = 0
+                        st.session_state.correct_count = 0
+                        st.session_state["attempted_indices"] = set()
+                        st.session_state.show_result = False
+                        st.session_state.active_q_id = None
+                        st.session_state.mode = "normal"
+                        st.rerun()
+
+                except Exception as e:
+                    st.error(f"⚠️ 特訓の起動に失敗しました: {e}")
+
+            # --- [2] 🌟 本日の締め・おさらい ---
             st.markdown("---")
-            # セッションから直接リストを取得
             wrongs = st.session_state.get("today_wrong_cards", [])
 
             if wrongs:
@@ -1945,6 +2031,7 @@ if not st.session_state.mode:
                 if st.button(
                     f"🚩 本日の締め・おさらい ({len(wrongs)}問)",
                     use_container_width=True,
+                    key="start_osarai",
                     type="primary",
                 ):
                     st.session_state.questions = list(wrongs)
@@ -1953,11 +2040,7 @@ if not st.session_state.mode:
                     st.session_state["attempted_indices"] = set()
                     st.session_state.show_result = False
                     st.session_state.active_q_id = None
-
-                    # 🌟🌟🌟 これを追加しました（画面切り替えの合図） 🌟🌟🌟
                     st.session_state.mode = "normal"
-
-                    # ボタンを押した瞬間に「おさらい中」となるのでリストを空にする
                     st.session_state.today_wrong_cards = []
                     st.rerun()
             else:
@@ -2971,5 +3054,8 @@ else:  # =========================================================
                 st.session_state.confirm_delete = False
                 st.rerun()
 
+# 🌟 ファイルの一番最後にこの1行を書き足す！
+run_auto_timer_logic()
 # 🔊 最後の一行
 execute_queued_sound()
+
