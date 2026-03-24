@@ -26,6 +26,49 @@ if "is_sleeping" not in st.session_state:
     st.session_state.is_sleeping = False
 
 
+def get_badge_html(category):
+    # 色の設定（原色に近く、パッと見てわかる鮮やかな色）
+    subject_map = {
+        "すべて": {"char": "全", "color": "#000000"},  # 真っ黒
+        "数学": {"char": "数", "color": "#007BFF"},  # 鮮やかな青
+        "漢字": {"char": "漢", "color": "#FF0000"},  # 真っ赤
+        "理科": {"char": "理", "color": "#00CED1"},  # 鮮やかなシアン
+        "地理": {"char": "地", "color": "#28A745"},  # 鮮やかな緑
+        "歴史": {"char": "歴", "color": "#FFC107"},  # 鮮やかな黄色（重要）
+        "公民": {"char": "公", "color": "#E91E63"},  # 鮮やかなピンク
+        "古文": {"char": "古", "color": "#795548"},  # 茶色
+    }
+
+    # 🌟 ワークの「ワ」をデフォルトに設定
+    info = {"char": "ワ", "color": "#546E7A"}  # ワークは少し落ち着いた紺色
+    for key, val in subject_map.items():
+        if key in category:
+            info = val
+            break
+
+    # 🌟 デザイン変更：科目の色で塗りつぶし、文字を白抜きにする
+    return f"""
+    <div style="
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 52px;                  /* 🌟 存在感のあるサイズ */
+        height: 52px;
+        border-radius: 50%;
+        background-color: {info["color"]}; /* 🌟 背景を科目の色で塗りつぶす */
+        color: #FFFFFF;                   /* 🌟 文字は白抜き */
+        font-weight: 700;                 /* 🌟 白文字なので少し太めに */
+        font-size: 26px;                  /* 🌟 文字サイズ調整 */
+        margin-right: 12px;
+        flex-shrink: 0;
+        vertical-align: middle;
+        box-shadow: 1px 1px 3px rgba(0,0,0,0.2); /* 🌟 少し立体感を出す影 */
+    ">
+        {info["char"]}
+    </div>
+    """
+
+
 def get_creds():
     try:
         if "gcp_service_account" in st.secrets:
@@ -2664,6 +2707,28 @@ if not st.session_state.mode:
 
     # 🌟 2. 履歴データの読み込みとグループ分け
     h_list = db.get("history", [])
+    # --- 📊 ここを追加：全履歴から教科ごとの実施回数をカウント ---
+    from collections import Counter
+
+    all_counts = []
+    for x in h_list:
+        # 表示時と同じクレンジングを行う
+        r = (
+            str(x.get("教科", ""))
+            .replace("検索：", "")
+            .replace("検索:", "")
+            .replace("検索", "")
+            .replace("：", "")
+            .replace(":", "")
+        )
+        ws = r.replace("　", " ").split()
+        u = []
+        for w in ws:
+            if w not in u:
+                u.append(w)
+        all_counts.append(" ".join(u).strip())
+    counts_map = Counter(all_counts)
+    # --------------------------------------------------------
     if h_list:
         now_d = datetime.now(JST).date()
         start_w = now_d - timedelta(days=now_d.weekday())
@@ -2697,9 +2762,27 @@ if not st.session_state.mode:
                 for h in items:
                     tid = h.get("ID")
 
-                    # --- 🎨 得点に基づいたカラー・メッセージ判定 ---
+                    # --- 🎨 判定と準備（カラー帯の前に計算を終わらせる） ---
+                    raw_subject = str(h.get("教科", ""))
+                    temp_text = (
+                        raw_subject.replace("検索：", "")
+                        .replace("検索:", "")
+                        .replace("検索", "")
+                        .replace("：", "")
+                        .replace(":", "")
+                    )
+                    words = temp_text.replace("　", " ").split()
+                    unique_words = []
+                    for w in words:
+                        if w not in unique_words:
+                            unique_words.append(w)
+                    clean_subject = " ".join(unique_words).strip()
+
+                    # 📊 実施回数の取得とテキスト作成
+                    play_count = counts_map.get(clean_subject, 0)
+                    count_text = f" ｜ 📊 {play_count}回目"
+
                     score_raw = h.get("得点")
-                    # 🌟 判定：得点がない、空、または「未実施」という文字が含まれる場合
                     is_new = (
                         score_raw is None
                         or score_raw == ""
@@ -2707,52 +2790,40 @@ if not st.session_state.mode:
                     )
 
                     try:
-                        if not is_new:
-                            # 数値だけを取り出す（例: "85.2点" -> 85.2）
-                            score_num = float(str(score_raw).split("点")[0])
-                        else:
-                            score_num = 0
+                        score_num = (
+                            float(str(score_raw).split("点")[0]) if not is_new else 0
+                        )
                     except Exception:
                         score_num = 0
 
                     # 🌟 崩れない標準の枠（コンテナ）
                     with st.container(border=True):
-                        # 👑 状態に応じて「一番上の帯」の色とアイコンを完全分離
+                        # 👑 一番上の帯に「回数」を表示
                         if is_new:
-                            # ✨ 作った直後：青色（Info）で「未実施」を表現
                             st.info(
-                                "🆕 NEW MISSION：未実施の新しい課題です。挑戦しよう！"
+                                f"🆕 NEW MISSION：未実施の新しい課題です。{count_text}"
                             )
-
                         elif score_num == 100:
-                            # 🥇 1位：濃い緑
-                            st.success(f"🥇【極】 完璧な満点！ 1位合格 🎖️ ({score_raw})")
-
-                        elif score_num >= 90:
-                            # 🥈 2位：薄い緑
                             st.success(
-                                f"🥈【秀】 素晴らしい！ あと一歩で満点 🏆 ({score_raw})"
+                                f"🥇【極】 完璧な満点！ 1位合格 🎖️ ({score_raw}){count_text}"
                             )
-
+                        elif score_num >= 90:
+                            st.success(
+                                f"🥈【秀】 素晴らしい！ あと一歩 🏆 ({score_raw}){count_text}"
+                            )
                         elif score_num >= 80:
-                            # 🥉 3位：黄色（合格）
-                            st.warning(
-                                f"🥉【優】 合格！ 記述テストの資格あり 🎉 ({score_raw})"
-                            )
-
+                            st.warning(f"🥉【優】 合格！ 🎉 ({score_raw}){count_text}")
                         else:
-                            # 80点未満：灰色
-                            st.write(f"📝 実施済み ({score_raw})")
+                            st.write(f"📝 実施済み ({score_raw}){count_text}")
 
-                        # --- 上段：情報とメインボタン（ここから中身） ---
-                        # 🛠️ 6列設定 [チェック, 情報, 特訓, 余白, 題, 答]
-                        c_sel, c_info, c_go, c_sp, c_pq, c_pa = st.columns(
-                            [0.4, 3.1, 1.2, 0.1, 0.8, 0.8]
+                        # --- カラム設定 ---
+                        c_sel, c_bdg, c_info, c_go, c_sp, c_pq, c_pa = st.columns(
+                            [0.4, 1.0, 2.1, 1.2, 0.1, 0.8, 0.8]
                         )
 
                         # 1. チェックボックス
                         is_checked = c_sel.checkbox(
-                            "選択", key=f"sel_{tid}", label_visibility="collapsed"
+                            "選択", key=f"sel_{lbl}_{tid}", label_visibility="collapsed"
                         )
                         if is_checked and tid not in st.session_state.delete_list:
                             st.session_state.delete_list.append(tid)
@@ -2761,41 +2832,27 @@ if not st.session_state.mode:
                             st.session_state.delete_list.remove(tid)
                             st.rerun()
 
-                        # 2. 情報表示
-                        # 🌟 重複した単語を確実に1つにまとめる処理
-                        raw_subject = str(h.get("教科", ""))
-
-                        # ① まず不要な「検索」や「：」「:」を消去
-                        # ※ ここで「temp_text」という名前で定義します
-                        temp_text = (
-                            raw_subject.replace("検索：", "")
-                            .replace("検索:", "")
-                            .replace("検索", "")
-                            .replace("：", "")
-                            .replace(":", "")
-                        )
-
-                        # ② 全角スペースを半角に統一して分割
-                        words = temp_text.replace("　", " ").split()
-
-                        # ③ 重複を除去（順番を維持したまま1つにする）
-                        unique_words = []
-                        for w in words:
-                            if w not in unique_words:
-                                unique_words.append(w)
-
-                        clean_subject = " ".join(unique_words).strip()
-
-                        c_info.markdown(
-                            f"<small style='color:#888;'>{h.get('日付')} | `{tid}`</small><br>"
-                            f"<strong style='font-size:18px;'>{clean_subject}</strong>",
+                        # 2. バッジ表示
+                        target_cat = unique_words[0] if unique_words else "すべて"
+                        badge_html = get_badge_html(target_cat)
+                        c_bdg.markdown(
+                            f"<div style='display: flex; justify-content: center; align-items: center; height: 75px;'>{badge_html}</div>",
                             unsafe_allow_html=True,
                         )
 
-                        # 3. ▶️ スタート
+                        # 3. 情報表示（日付と教科名のみ）
+                        c_info.markdown(
+                            f"<div style='margin-top: 10px;'>"
+                            f"<small style='color:#bbb;'>{h.get('日付')} | {tid}</small><br>"
+                            f"<strong style='font-size:22px; color:#333;'>{clean_subject}</strong>"
+                            f"</div>",
+                            unsafe_allow_html=True,
+                        )
+
+                        # 4. ▶️ スタート（キー重複対策済み）
                         if c_go.button(
                             "▶️ スタート",
-                            key=f"go_{tid}",
+                            key=f"go_{lbl}_{tid}",
                             type="primary",
                             use_container_width=True,
                         ):
@@ -2810,69 +2867,67 @@ if not st.session_state.mode:
                                 "show_options",
                                 "attempted_indices",
                                 "active_q_id",
-                                "current_opts",  # 🌟 これらを必ず入れる
+                                "current_opts",
                             ]
                             for k in keys_to_reset:
                                 if k in st.session_state:
                                     del st.session_state[k]
 
-                            # 🌟 明示的に空のセットで初期化
                             st.session_state.attempted_indices = set()
-                            st.session_state.show_options = False
-                            st.session_state.correct_cache = []
-                            st.session_state.index = 0
-                            st.session_state.correct_count = 0
+                            st.session_state.index = int(h.get("進捗", 0))
+                            st.session_state.active_mission_id = tid
+                            st.session_state.mode = "training"
 
-                            skip_indices = get_skip_indices(str(h.get("除外", "")))
                             q_json = json.loads(h.get("問題リスト(JSON)", "[]"))
                             base_qs = [
                                 next((q for q in flat_pool if q["q"] == t), None)
                                 for t in q_json
                             ]
+                            skip_indices = get_skip_indices(str(h.get("除外", "")))
                             st.session_state.questions = [
                                 q
                                 for i, q in enumerate(base_qs[:30])
                                 if q and (i + 1) not in skip_indices
                             ]
-                            st.session_state.index = int(h.get("進捗", 0))
-                            st.session_state.active_mission_id = tid
-                            st.session_state.mode = "training"
                             st.rerun()
 
-                        # 4. 📄 題 / 🔑 答
+                        # 5. 📄 題 / 🔑 答
                         with c_sp:
-                            st.write("")  # スペース用
-
+                            st.write("")
                         if c_pq.button(
-                            "📄 題", key=f"pq_{tid}", use_container_width=True
+                            "📄 題", key=f"pq_{lbl}_{tid}", use_container_width=True
                         ):
-                            q_json = json.loads(h.get("問題リスト(JSON)", "[]"))
-                            target_qs = [
-                                next((q for q in flat_pool if q["q"] == t), None)
-                                for t in q_json
-                            ]
                             st.session_state.print_type = "q"
                             st.session_state.print_data = {
                                 "mode": h.get("教科"),
                                 "id": tid,
-                                "qs": [q for q in target_qs if q],
+                                "qs": [
+                                    next((q for q in flat_pool if q["q"] == t), None)
+                                    for t in json.loads(h.get("問題リスト(JSON)", "[]"))
+                                    if next((q for q in flat_pool if q["q"] == t), None)
+                                ],
                             }
                             st.rerun()
 
                         if c_pa.button(
-                            "🔑 答", key=f"pa_{tid}", use_container_width=True
+                            "🔑 答", key=f"pa_{lbl}_{tid}", use_container_width=True
                         ):
                             if st.session_state.get("parent_unlock_key") == "7777":
-                                q_json = json.loads(h.get("問題リスト(JSON)", "[]"))
-                                target_qs = [
-                                    next((q for q in flat_pool if q["q"] == t), None)
-                                    for t in q_json
-                                ]
                                 st.session_state.print_type = "a"
                                 st.session_state.print_data = {
                                     "mode": h.get("教科"),
                                     "id": tid,
-                                    "qs": [q for q in target_qs if q],
+                                    "qs": [
+                                        next(
+                                            (q for q in flat_pool if q["q"] == t), None
+                                        )
+                                        for t in json.loads(
+                                            h.get("問題リスト(JSON)", "[]")
+                                        )
+                                        if next(
+                                            (q for q in flat_pool if q["q"] == t), None
+                                        )
+                                    ],
                                 }
                                 st.rerun()
                             else:
@@ -2884,18 +2939,21 @@ if not st.session_state.mode:
                         memo_val = c_m1.text_input(
                             "📝 メモ",
                             value=str(h.get("メモ", "")),
-                            key=f"memo_{tid}",
+                            key=f"memo_{lbl}_{tid}",
                             label_visibility="collapsed",
                             placeholder="メモを入力...",
                         )
                         skip_val = c_m2.text_input(
                             "✂️ 除外",
                             value=str(h.get("除外", "")),
-                            key=f"skip_{tid}",
+                            key=f"skip_{lbl}_{tid}",
                             label_visibility="collapsed",
                             placeholder="除外番号...",
                         )
-                        if c_m3.button("💾", key=f"sv_{tid}", use_container_width=True):
+
+                        if c_m3.button(
+                            "💾", key=f"sv_{lbl}_{tid}", use_container_width=True
+                        ):
                             try:
                                 gc = gspread.authorize(get_creds())
                                 sh_h = gc.open("study_stats_db").worksheet("history")
@@ -2908,6 +2966,7 @@ if not st.session_state.mode:
                                     st.toast("更新しました", icon="✅")
                             except Exception:
                                 st.error("保存失敗")
+                    # 🌟 修正：余計な st.markdown("</div>") は削除しました
 
                     # 🌟 カード枠の終了（ここで div を閉じます）
                     st.markdown("</div>", unsafe_allow_html=True)
