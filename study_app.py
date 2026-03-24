@@ -204,9 +204,6 @@ def run_auto_timer_logic():
     st.session_state.last_action_time = now
 
 
-run_auto_timer_logic()
-
-
 def match_study_filter(search_query, q_item):
     # --- あなたが提示したコード（これでOK） ---
     if not search_query:
@@ -1521,13 +1518,15 @@ if elapsed_t < 240:
     # 1秒以上の経過をメモリに積み上げる
     if elapsed_t >= 1.0:
         add_sec = int(elapsed_t)
+
+        # 🌟 修正：ここにもガードレールを入れる！
+        if add_sec > 300:
+            add_sec = 0
+
         st.session_state.unsynced_seconds += add_sec
         st.session_state.daily_seconds += add_sec
         if "total_seconds" in st.session_state:
             st.session_state.total_seconds += add_sec
-
-        # 🌟 加算した分だけ「最後の活動時刻」を更新
-        st.session_state.last_action_time = now_ts
 else:
     # 🌟 4分以上経過＝休憩中（時間は増えない）
     st.session_state.is_sleeping = True
@@ -3267,7 +3266,7 @@ else:
                 drawing_mode="freedraw",
                 display_toolbar=True,  # 🗑️ ゴミ箱アイコン等を表示
                 key=f"dyn_cv_{idx}",
-                update_streamlit=True,
+                update_streamlit=False,  # 👈 True から False に変更
             )
 
             # 🌟 3. キャンバスの直後にボタンを作る
