@@ -1423,17 +1423,15 @@ def load_db():
 # 🌟 この代入行が、サイドバーやメインパネルの UI コードより「上」にあることを確認してください
 all_q, db = load_db()
 
+
 # =============================================================================
 # 8. セッション初期化 & タイマー管理
 # =============================================================================
-
-
 def init_session():
     """
     アプリの状態管理変数を一括初期化。
-    二重読み込みと無限ループを防止するガード機能付き。
     """
-    # 🛡️ 1. 【超重要】すでに初期化が済んでいる場合は、何もせずに終了する
+    # 🛡️ 1. すでに初期化が済んでいる場合は、何もせずに終了する
     if st.session_state.get("is_timer_loaded", False):
         return
 
@@ -1452,7 +1450,8 @@ def init_session():
         "sound_enabled": True,
         "play_this": None,
         "last_action_time": time.time(),
-        "unsynced_seconds": 0,
+        "last_sync_time": time.time(),  # 🌟 これを追加！
+        "unsynced_seconds": 0,  # これは既に入っていますね
         "print_data": None,
         "print_type": None,
         "active_mission_id": None,
@@ -1465,7 +1464,6 @@ def init_session():
         "daily_seconds": 0,
         "total_seconds": 0,
     }
-
     # 3. defaults を session_state に登録
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -1502,35 +1500,55 @@ def init_session():
         st.session_state.is_timer_loaded = True
 
 
-# --- 呼び出し部分 ---
+# --- 修正：ここから下は「一番左（スペースなし）」で配置します ---
+
+# 1. セッション初期化の実行（必ず最初の方に配置）
 init_session()
 
-# --- タイマー：リアルタイム加算（4分放置でストップ） ---
+# 2. タイマー：計測 ＆ 安全装置 ＆ スプシ自動保存
 now_ts = time.time()
 # 最後に「加算」または「操作」した時刻からの経過
 last_t = st.session_state.get("last_action_time", now_ts)
 elapsed_t = now_ts - last_t
 
-# --- 活動判定：240秒（4分）以内の動きなら加算 ---
-if elapsed_t < 240:
+# --- 活動判定：300秒（5分）以内の動きなら加算 ---
+if elapsed_t < 300:
     st.session_state.is_sleeping = False
 
     # 1秒以上の経過をメモリに積み上げる
     if elapsed_t >= 1.0:
         add_sec = int(elapsed_t)
 
-        # 🌟 修正：ここにもガードレールを入れる！
+        # 🌟 ガードレール：異常値をカット
         if add_sec > 300:
             add_sec = 0
 
-        st.session_state.unsynced_seconds += add_sec
+        # ブラウザ表示用の数値を更新
         st.session_state.daily_seconds += add_sec
         if "total_seconds" in st.session_state:
             st.session_state.total_seconds += add_sec
+
+        # スプシ送信用の貯金箱
+        if "unsynced_seconds" not in st.session_state:
+            st.session_state.unsynced_seconds = 0
+        st.session_state.unsynced_seconds += add_sec
+
+        # スプシへの自動保存（60秒たまったら）
+        if st.session_state.unsynced_seconds >= 60:
+            sync_timer_to_row2(st.session_state.unsynced_seconds)
+            st.session_state.unsynced_seconds = 0
+            st.session_state.last_sync_time = now_ts
+
+        # 最後に計測した時刻を更新
+        st.session_state.last_action_time = now_ts
+
 else:
-    # 🌟 4分以上経過＝休憩中（時間は増えない）
+    # 5分以上経過＝休憩中
     st.session_state.is_sleeping = True
-    # last_action_time は更新せず放置することで、次に動くまで時間が止まる
+    # 放置からの復帰に備えて時刻をリセット
+    st.session_state.last_action_time = now_ts
+
+# --- 修正：ここまで ---
 
 # =============================================================================
 # 9. サイドバー UI 実装 (2026年 爆速・筋肉質版)
