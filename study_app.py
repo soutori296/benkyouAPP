@@ -3649,8 +3649,12 @@ else:
             is_result_showing = st.session_state.get("show_result", False)
             is_correct = st.session_state.get("last_is_correct", False)
 
+            # 🌟 修正ポイント：locals() を使って変数が存在するかチェックし、
+            # 存在しない場合（漢字モードなど）は False になるようにします
+            is_scramble_mode = locals().get("actual_scramble", False)
+
             # --- 🌟 無効化条件の判定 ---
-            if actual_scramble and is_result_showing and not is_correct:
+            if is_scramble_mode and is_result_showing and not is_correct:
                 # 【並べ替え】かつ【結果表示中】かつ【不正解】の時は、特別に「飛ばす」を有効にする
                 should_disable_skip = False
             else:
@@ -3685,7 +3689,10 @@ else:
                 st.rerun()
 
         with n_col[4]:  # 🌟 並び替え専用操作（右端の余白）
-            if actual_scramble and not st.session_state.get("show_result"):
+            # 🌟 修正ポイント：actual_scramble が定義されていない場合でもエラーにならないようにする
+            is_scramble_mode = locals().get("actual_scramble", False)
+
+            if is_scramble_mode and not st.session_state.get("show_result"):
                 u_ans_list = st.session_state.get("user_ans_order", [])
                 if u_ans_list:
                     c_sub1, c_sub2, _ = st.columns([1.1, 1.1, 1.3])
