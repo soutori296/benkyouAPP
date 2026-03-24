@@ -230,8 +230,8 @@ def run_auto_timer_logic():
         # 🌟 前回の「書き込み」から60秒以上経っているかチェック
         time_since_sync = now - st.session_state.get("last_sync_time", 0)
 
-        if time_since_sync >= 60:
-            # 60秒経っていれば、溜まった分を一気に書き込む！
+        if time_since_sync >= 600:
+            # 600秒経っていれば、溜まった分を一気に書き込む！
             sync_timer_to_row2(st.session_state.unsynced_seconds)
 
             # 書き込んだのでメモをリセット
@@ -262,44 +262,70 @@ def match_study_filter(search_query, q_item):
 
 
 def to_pretty_display(text):
-    """ボタン・ヒント用：LaTeXを記号・変数イタリック・エスケープ掃除込みで変換する"""
+    """ボタン・ヒント用：LaTeXを記号・変数イタリック・分数・エスケープ掃除込みで変換する"""
     if not isinstance(text, str):
         return text
 
-    # 1. $ を消去
+    import re
+
+    # 1. $ 記号の消去
     t = text.replace("$", "")
 
-    # 2. 【新規追加】LaTeXのエスケープ記号（\% など）を普通の記号に戻す
-    # % や $ や _ などの前にある \ を取り除きます
+    # 2. LaTeXのエスケープ記号を普通の記号に戻す
     escape_chars = ["%", "$", "_", "{", "}", "&", "#"]
     for char in escape_chars:
         t = t.replace(f"\\{char}", char)
 
-    # 3. 算数・数学の特殊記号（\times など）
+    # 3. 【新設】分数の変換 (\frac{分子}{分母} -> 分子/分母)
+    # 後の処理で {} が消される前に、分数として形を整えます
+    t = re.sub(r"\\frac\{([^}]*)\}\{([^}]*)\}", r"\1/\2", t)
+
+    # 4. 算数・数学・理科の特殊記号（網羅版）
     replacements = {
+        # --- 角度・度数 ---
+        "^\\circ": "°",
+        "\\circ": "°",
+        "\\degree": "°",
+        # --- 四則演算・不等号 ---
         "\\times": "×",
         "\\div": "÷",
         "\\pm": "±",
+        "\\neq": "≠",
         "\\leqq": "≦",
         "\\geqq": "≧",
         "\\le": "≦",
         "\\ge": "≧",
+        # --- 図形（合同・相似・平行・垂直） ---
+        "\\cong": "≅",
+        "\\sim": "∽",
+        "\\parallel": "∥",
+        "\\perp": "⊥",
+        "\\triangle": "△",
+        "\\angle": "∠",
+        # --- その他数学記号 ---
         "\\pi": "π",
+        "\\sqrt": "√",
+        "\\prime": "′",
         "\\approx": "≒",
         "\\therefore": "∴",
         "\\because": "∵",
-        "\\triangle": "△",
-        "\\angle": "∠",
         "\\infty": "∞",
+        # --- 理科・ギリシャ文字 ---
+        "\\Omega": "Ω",
+        "\\theta": "θ",
+        "\\alpha": "α",
+        "\\beta": "β",
+        "\\gamma": "γ",
+        "\\ell": "ℓ",
+        "\\rightarrow": "→",
     }
     for old, new in replacements.items():
         t = t.replace(old, new)
 
-    # 3. \text{...} の中身だけを取り出す（化学式などはここに含まれる）
+    # 5. \text{...} の中身だけを取り出す
     t = re.sub(r"\\text\{([^}]*)\}", r"\1", t)
 
-    # 4. 数学の変数を数式用イタリック文字に一括変換
-    # 教科書でよく使う文字を網羅（a-z）
+    # 6. 数学の変数を数式用イタリック文字に一括変換
     var_map = {
         "a": "𝑎",
         "b": "𝑏",
@@ -315,7 +341,7 @@ def to_pretty_display(text):
         "l": "𝑙",
         "m": "𝑚",
         "n": "𝑛",
-        "o": "𝑜",
+        "o": "ｏ",
         "p": "𝑝",
         "q": "𝑞",
         "r": "𝑟",
@@ -326,23 +352,21 @@ def to_pretty_display(text):
         "w": "𝑤",
         "x": "𝑥",
         "y": "𝑦",
-        "z": "𝑧",
+        "z": "ｚ",
     }
-
-    # 独立したアルファベット1文字のみを変換（化学式の H や O、英語の don't などを避けるため）
+    # 前後にアルファベットやアポストロフィがない独立した1文字のみを変換
     for eng, math in var_map.items():
-        # 🌟 修正ポイント：前後にアルファベットだけでなく「'（アポストロフィ）」がある場合も除外する
         pattern = rf"(^|[^a-zA-Z']){eng}([^a-zA-Z']|$)"
         t = re.sub(pattern, rf"\1{math}\2", t)
 
-    # 5. 下付き・上付き文字の変換
+    # 7. 下付き・上付き文字の変換 (0-9対応)
     sub_map = str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")
     t = re.sub(r"_\{?(\d+)\}?", lambda m: m.group(1).translate(sub_map), t)
 
     sup_map = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
     t = re.sub(r"\^\{?(\d+)\}?", lambda m: m.group(1).translate(sup_map), t)
 
-    # 6. 残った不要な中括弧を消去
+    # 8. 残った不要な中括弧を消去
     t = t.replace("{", "").replace("}", "")
 
     return t
@@ -1379,24 +1403,36 @@ def load_db():
                 "work_name": w_name,
             }
 
-            # 4. ダミー選択肢の処理 (a_val を使用して重複を除去)
-            raw_dummy = str(
-                r.get("p_dummy") if r.get("p_dummy") else r.get("dummy", "")
-            )
-            clean_dummies = [
-                d.strip()
-                for d in re.split(r"[,、]", raw_dummy)
-                if d.strip() and d.strip() != a_val
-            ]
-            question_data["dummy"] = ", ".join(clean_dummies)
+            # --- [1397行目付近] 4. ダミー選択肢の処理 ---
+            raw_dummy = str(r.get("p_dummy", r.get("dummy", "")))
+            is_math = "数学" in str(cat_val)
 
-            # 5. strokes の処理（1から10まで取得）
-            for i in range(1, 11):
-                col_key = f"strokes{i}"
-                if col_key in r:
-                    question_data[col_key] = r[col_key]
+            if is_math and ",$" in raw_dummy:
+                # 境目の「,$」だけで分ける
+                split_dummies = raw_dummy.replace(",$", "###SEP###$").split("###SEP###")
+            else:
+                split_dummies = re.split(r"[,、]", raw_dummy)
 
-            # 6. 格納処理
+            # 正解と比較するためのクリーンな文字列
+            target_a_flat = a_val.replace("$", "").replace(" ", "").strip()
+
+            clean_dummies = []
+            for d in split_dummies:
+                d_strip = d.strip()
+                if not d_strip:
+                    continue
+
+                # $ とスペースを無視して正解と重複していないかチェック
+                if d_strip.replace("$", "").replace(" ", "") != target_a_flat:
+                    clean_dummies.append(d_strip)
+
+            # 🌟 保存：数学なら「,$」で繋ぐ
+            if is_math:
+                question_data["dummy"] = ",$".join(clean_dummies)
+            else:
+                question_data["dummy"] = ", ".join(clean_dummies)
+
+            # 🌟 [重要] ここでデータをリストに追加！
             org_questions.setdefault(cat_val, []).append(question_data)
             cat_total_counts[cat_val] = cat_total_counts.get(cat_val, 0) + 1
 
@@ -1474,11 +1510,7 @@ def init_session():
     """
     アプリの状態管理変数を一括初期化。
     """
-    # 🛡️ 1. すでに初期化が済んでいる場合は、何もせずに終了する
-    if st.session_state.get("is_timer_loaded", False):
-        return
-
-    # 2. 初期値の定義
+    # 1. 初期値の定義（まず箱のリストを定義する）
     defaults = {
         "questions": [],
         "index": 0,
@@ -1493,8 +1525,8 @@ def init_session():
         "sound_enabled": True,
         "play_this": None,
         "last_action_time": time.time(),
-        "last_sync_time": time.time(),  # 🌟 これを追加！
-        "unsynced_seconds": 0,  # これは既に入っていますね
+        "last_sync_time": time.time(),
+        "unsynced_seconds": 0,
         "print_data": None,
         "print_type": None,
         "active_mission_id": None,
@@ -1507,10 +1539,16 @@ def init_session():
         "daily_seconds": 0,
         "total_seconds": 0,
     }
-    # 3. defaults を session_state に登録
+
+    # 🌟 2. 重要：変数が session_state になければ作成する
+    # この処理を一番上に持ってくることで、スタートボタン等で del された変数も確実に復活します
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
+
+    # 🛡️ 3. スプレッドシートからの重い読み込み（タイマー）は、一度済んでいればここで終了
+    if st.session_state.get("is_timer_loaded", False):
+        return
 
     # 4. スプレッドシートから最新の学習時間を読み込む（アプリ起動時の1回のみ）
     try:
@@ -1530,68 +1568,52 @@ def init_session():
         st.session_state.daily_seconds = safe_int(row2[1]) if len(row2) > 1 else 0
         st.session_state.total_seconds = safe_int(row2[2]) if len(row2) > 2 else 0
 
-        # 🚩 読み込み完了フラグを立てる（これがループを止めます）
+        # 🚩 読み込み完了フラグを立てる
         st.session_state.is_timer_loaded = True
-
         print(
             f"✅ 起動読込成功: Today={st.session_state.daily_seconds}, Total={st.session_state.total_seconds}"
         )
 
     except Exception as e:
         print(f"⚠️ 起動読込エラー: {e}")
-        # エラー時も「読み込み済み」にしてループを止める
+        # エラー時も「読み込み済み」にして無限ループを防止
         st.session_state.is_timer_loaded = True
 
 
 # --- 修正：ここから下は「一番左（スペースなし）」で配置します ---
 
-# 1. セッション初期化の実行（必ず最初の方に配置）
+# 1. セッション初期化の実行
 init_session()
 
 # 2. タイマー：計測 ＆ 安全装置 ＆ スプシ自動保存
 now_ts = time.time()
-# 最後に「加算」または「操作」した時刻からの経過
 last_t = st.session_state.get("last_action_time", now_ts)
 elapsed_t = now_ts - last_t
 
-# --- 活動判定：300秒（5分）以内の動きなら加算 ---
 if elapsed_t < 300:
     st.session_state.is_sleeping = False
-
-    # 1秒以上の経過をメモリに積み上げる
     if elapsed_t >= 1.0:
         add_sec = int(elapsed_t)
-
-        # 🌟 ガードレール：異常値をカット
         if add_sec > 300:
             add_sec = 0
 
-        # ブラウザ表示用の数値を更新
         st.session_state.daily_seconds += add_sec
         if "total_seconds" in st.session_state:
             st.session_state.total_seconds += add_sec
 
-        # スプシ送信用の貯金箱
         if "unsynced_seconds" not in st.session_state:
             st.session_state.unsynced_seconds = 0
         st.session_state.unsynced_seconds += add_sec
 
-        # スプシへの自動保存（60秒たまったら）
-        if st.session_state.unsynced_seconds >= 60:
+        if st.session_state.unsynced_seconds >= 600:
             sync_timer_to_row2(st.session_state.unsynced_seconds)
             st.session_state.unsynced_seconds = 0
             st.session_state.last_sync_time = now_ts
 
-        # 最後に計測した時刻を更新
         st.session_state.last_action_time = now_ts
-
 else:
-    # 5分以上経過＝休憩中
     st.session_state.is_sleeping = True
-    # 放置からの復帰に備えて時刻をリセット
     st.session_state.last_action_time = now_ts
-
-# --- 修正：ここまで ---
 
 # =============================================================================
 # 9. サイドバー UI 実装 (2026年 爆速・筋肉質版)
@@ -3550,12 +3572,30 @@ else:
                             key=f"sh_f_{idx}",
                             use_container_width=True,
                         ):
-                            cv = clean_text(ans_raw.split("/")[0].split("／")[0])
+                            # 正解の取得（最初のスラッシュまで）
+                            if "数学" in str(q.get("category", "")):
+                                # 🌟 数学の場合は / を「分数」として使うので、分割せずにそのまま正解とする
+                                cv = clean_text(ans_raw)
+                            else:
+                                # 数学以外は従来通り、/ を「別の正解」の区切りとして最初の1つを取る
+                                cv = clean_text(ans_raw.split("/")[0].split("／")[0])
+
+                            # 🌟 数学なら「,$」で分け、それ以外は通常のカンマで分ける
+                            d_text = str(q.get("dummy", ""))
+                            if "数学" in str(q.get("category", "")):
+                                # 読み込み時に ",$" で結合したため、ここで正しくバラす
+                                d_list = d_text.split(",$")
+                            else:
+                                # 数学以外は従来通りの分割
+                                d_list = re.split(r"[,、]", d_text)
+
                             all_d = [
                                 clean_text(d)
-                                for d in re.split(r"[,、]", str(q.get("dummy", "")))
+                                for d in d_list
                                 if d.strip() and clean_text(d) != cv
                             ]
+
+                            # 選択肢のシャッフルと生成
                             raw_opts = [cv] + random.sample(all_d, min(len(all_d), 3))
                             st.session_state.current_opts = random.sample(
                                 raw_opts, len(raw_opts)
