@@ -26,49 +26,6 @@ if "is_sleeping" not in st.session_state:
     st.session_state.is_sleeping = False
 
 
-def get_badge_html(category):
-    # 色の設定（原色に近く、パッと見てわかる鮮やかな色）
-    subject_map = {
-        "すべて": {"char": "全", "color": "#000000"},  # 真っ黒
-        "数学": {"char": "数", "color": "#007BFF"},  # 鮮やかな青
-        "漢字": {"char": "漢", "color": "#FF0000"},  # 真っ赤
-        "理科": {"char": "理", "color": "#00CED1"},  # 鮮やかなシアン
-        "地理": {"char": "地", "color": "#28A745"},  # 鮮やかな緑
-        "歴史": {"char": "歴", "color": "#FFC107"},  # 鮮やかな黄色（重要）
-        "公民": {"char": "公", "color": "#E91E63"},  # 鮮やかなピンク
-        "古文": {"char": "古", "color": "#795548"},  # 茶色
-    }
-
-    # 🌟 ワークの「ワ」をデフォルトに設定
-    info = {"char": "ワ", "color": "#546E7A"}  # ワークは少し落ち着いた紺色
-    for key, val in subject_map.items():
-        if key in category:
-            info = val
-            break
-
-    # 🌟 デザイン変更：科目の色で塗りつぶし、文字を白抜きにする
-    return f"""
-    <div style="
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 52px;                  /* 🌟 存在感のあるサイズ */
-        height: 52px;
-        border-radius: 50%;
-        background-color: {info["color"]}; /* 🌟 背景を科目の色で塗りつぶす */
-        color: #FFFFFF;                   /* 🌟 文字は白抜き */
-        font-weight: 700;                 /* 🌟 白文字なので少し太めに */
-        font-size: 26px;                  /* 🌟 文字サイズ調整 */
-        margin-right: 12px;
-        flex-shrink: 0;
-        vertical-align: middle;
-        box-shadow: 1px 1px 3px rgba(0,0,0,0.2); /* 🌟 少し立体感を出す影 */
-    ">
-        {info["char"]}
-    </div>
-    """
-
-
 def get_creds():
     try:
         if "gcp_service_account" in st.secrets:
@@ -230,8 +187,8 @@ def run_auto_timer_logic():
         # 🌟 前回の「書き込み」から60秒以上経っているかチェック
         time_since_sync = now - st.session_state.get("last_sync_time", 0)
 
-        if time_since_sync >= 600:
-            # 600秒経っていれば、溜まった分を一気に書き込む！
+        if time_since_sync >= 60:
+            # 60秒経っていれば、溜まった分を一気に書き込む！
             sync_timer_to_row2(st.session_state.unsynced_seconds)
 
             # 書き込んだのでメモをリセット
@@ -262,70 +219,44 @@ def match_study_filter(search_query, q_item):
 
 
 def to_pretty_display(text):
-    """ボタン・ヒント用：LaTeXを記号・変数イタリック・分数・エスケープ掃除込みで変換する"""
+    """ボタン・ヒント用：LaTeXを記号・変数イタリック・エスケープ掃除込みで変換する"""
     if not isinstance(text, str):
         return text
 
-    import re
-
-    # 1. $ 記号の消去
+    # 1. $ を消去
     t = text.replace("$", "")
 
-    # 2. LaTeXのエスケープ記号を普通の記号に戻す
+    # 2. 【新規追加】LaTeXのエスケープ記号（\% など）を普通の記号に戻す
+    # % や $ や _ などの前にある \ を取り除きます
     escape_chars = ["%", "$", "_", "{", "}", "&", "#"]
     for char in escape_chars:
         t = t.replace(f"\\{char}", char)
 
-    # 3. 【新設】分数の変換 (\frac{分子}{分母} -> 分子/分母)
-    # 後の処理で {} が消される前に、分数として形を整えます
-    t = re.sub(r"\\frac\{([^}]*)\}\{([^}]*)\}", r"\1/\2", t)
-
-    # 4. 算数・数学・理科の特殊記号（網羅版）
+    # 3. 算数・数学の特殊記号（\times など）
     replacements = {
-        # --- 角度・度数 ---
-        "^\\circ": "°",
-        "\\circ": "°",
-        "\\degree": "°",
-        # --- 四則演算・不等号 ---
         "\\times": "×",
         "\\div": "÷",
         "\\pm": "±",
-        "\\neq": "≠",
         "\\leqq": "≦",
         "\\geqq": "≧",
         "\\le": "≦",
         "\\ge": "≧",
-        # --- 図形（合同・相似・平行・垂直） ---
-        "\\cong": "≅",
-        "\\sim": "∽",
-        "\\parallel": "∥",
-        "\\perp": "⊥",
-        "\\triangle": "△",
-        "\\angle": "∠",
-        # --- その他数学記号 ---
         "\\pi": "π",
-        "\\sqrt": "√",
-        "\\prime": "′",
         "\\approx": "≒",
         "\\therefore": "∴",
         "\\because": "∵",
+        "\\triangle": "△",
+        "\\angle": "∠",
         "\\infty": "∞",
-        # --- 理科・ギリシャ文字 ---
-        "\\Omega": "Ω",
-        "\\theta": "θ",
-        "\\alpha": "α",
-        "\\beta": "β",
-        "\\gamma": "γ",
-        "\\ell": "ℓ",
-        "\\rightarrow": "→",
     }
     for old, new in replacements.items():
         t = t.replace(old, new)
 
-    # 5. \text{...} の中身だけを取り出す
+    # 3. \text{...} の中身だけを取り出す（化学式などはここに含まれる）
     t = re.sub(r"\\text\{([^}]*)\}", r"\1", t)
 
-    # 6. 数学の変数を数式用イタリック文字に一括変換
+    # 4. 数学の変数を数式用イタリック文字に一括変換
+    # 教科書でよく使う文字を網羅（a-z）
     var_map = {
         "a": "𝑎",
         "b": "𝑏",
@@ -341,7 +272,7 @@ def to_pretty_display(text):
         "l": "𝑙",
         "m": "𝑚",
         "n": "𝑛",
-        "o": "ｏ",
+        "o": "𝑜",
         "p": "𝑝",
         "q": "𝑞",
         "r": "𝑟",
@@ -352,21 +283,23 @@ def to_pretty_display(text):
         "w": "𝑤",
         "x": "𝑥",
         "y": "𝑦",
-        "z": "ｚ",
+        "z": "𝑧",
     }
-    # 前後にアルファベットやアポストロフィがない独立した1文字のみを変換
+
+    # 独立したアルファベット1文字のみを変換（化学式の H や O、英語の don't などを避けるため）
     for eng, math in var_map.items():
+        # 🌟 修正ポイント：前後にアルファベットだけでなく「'（アポストロフィ）」がある場合も除外する
         pattern = rf"(^|[^a-zA-Z']){eng}([^a-zA-Z']|$)"
         t = re.sub(pattern, rf"\1{math}\2", t)
 
-    # 7. 下付き・上付き文字の変換 (0-9対応)
+    # 5. 下付き・上付き文字の変換
     sub_map = str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")
     t = re.sub(r"_\{?(\d+)\}?", lambda m: m.group(1).translate(sub_map), t)
 
     sup_map = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
     t = re.sub(r"\^\{?(\d+)\}?", lambda m: m.group(1).translate(sup_map), t)
 
-    # 8. 残った不要な中括弧を消去
+    # 6. 残った不要な中括弧を消去
     t = t.replace("{", "").replace("}", "")
 
     return t
@@ -1403,36 +1336,24 @@ def load_db():
                 "work_name": w_name,
             }
 
-            # --- [1397行目付近] 4. ダミー選択肢の処理 ---
-            raw_dummy = str(r.get("p_dummy", r.get("dummy", "")))
-            is_math = "数学" in str(cat_val)
+            # 4. ダミー選択肢の処理 (a_val を使用して重複を除去)
+            raw_dummy = str(
+                r.get("p_dummy") if r.get("p_dummy") else r.get("dummy", "")
+            )
+            clean_dummies = [
+                d.strip()
+                for d in re.split(r"[,、]", raw_dummy)
+                if d.strip() and d.strip() != a_val
+            ]
+            question_data["dummy"] = ", ".join(clean_dummies)
 
-            if is_math and ",$" in raw_dummy:
-                # 境目の「,$」だけで分ける
-                split_dummies = raw_dummy.replace(",$", "###SEP###$").split("###SEP###")
-            else:
-                split_dummies = re.split(r"[,、]", raw_dummy)
+            # 5. strokes の処理（1から10まで取得）
+            for i in range(1, 11):
+                col_key = f"strokes{i}"
+                if col_key in r:
+                    question_data[col_key] = r[col_key]
 
-            # 正解と比較するためのクリーンな文字列
-            target_a_flat = a_val.replace("$", "").replace(" ", "").strip()
-
-            clean_dummies = []
-            for d in split_dummies:
-                d_strip = d.strip()
-                if not d_strip:
-                    continue
-
-                # $ とスペースを無視して正解と重複していないかチェック
-                if d_strip.replace("$", "").replace(" ", "") != target_a_flat:
-                    clean_dummies.append(d_strip)
-
-            # 🌟 保存：数学なら「,$」で繋ぐ
-            if is_math:
-                question_data["dummy"] = ",$".join(clean_dummies)
-            else:
-                question_data["dummy"] = ", ".join(clean_dummies)
-
-            # 🌟 [重要] ここでデータをリストに追加！
+            # 6. 格納処理
             org_questions.setdefault(cat_val, []).append(question_data)
             cat_total_counts[cat_val] = cat_total_counts.get(cat_val, 0) + 1
 
@@ -1510,7 +1431,11 @@ def init_session():
     """
     アプリの状態管理変数を一括初期化。
     """
-    # 1. 初期値の定義（まず箱のリストを定義する）
+    # 🛡️ 1. すでに初期化が済んでいる場合は、何もせずに終了する
+    if st.session_state.get("is_timer_loaded", False):
+        return
+
+    # 2. 初期値の定義
     defaults = {
         "questions": [],
         "index": 0,
@@ -1525,8 +1450,8 @@ def init_session():
         "sound_enabled": True,
         "play_this": None,
         "last_action_time": time.time(),
-        "last_sync_time": time.time(),
-        "unsynced_seconds": 0,
+        "last_sync_time": time.time(),  # 🌟 これを追加！
+        "unsynced_seconds": 0,  # これは既に入っていますね
         "print_data": None,
         "print_type": None,
         "active_mission_id": None,
@@ -1539,16 +1464,10 @@ def init_session():
         "daily_seconds": 0,
         "total_seconds": 0,
     }
-
-    # 🌟 2. 重要：変数が session_state になければ作成する
-    # この処理を一番上に持ってくることで、スタートボタン等で del された変数も確実に復活します
+    # 3. defaults を session_state に登録
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
-
-    # 🛡️ 3. スプレッドシートからの重い読み込み（タイマー）は、一度済んでいればここで終了
-    if st.session_state.get("is_timer_loaded", False):
-        return
 
     # 4. スプレッドシートから最新の学習時間を読み込む（アプリ起動時の1回のみ）
     try:
@@ -1568,52 +1487,68 @@ def init_session():
         st.session_state.daily_seconds = safe_int(row2[1]) if len(row2) > 1 else 0
         st.session_state.total_seconds = safe_int(row2[2]) if len(row2) > 2 else 0
 
-        # 🚩 読み込み完了フラグを立てる
+        # 🚩 読み込み完了フラグを立てる（これがループを止めます）
         st.session_state.is_timer_loaded = True
+
         print(
             f"✅ 起動読込成功: Today={st.session_state.daily_seconds}, Total={st.session_state.total_seconds}"
         )
 
     except Exception as e:
         print(f"⚠️ 起動読込エラー: {e}")
-        # エラー時も「読み込み済み」にして無限ループを防止
+        # エラー時も「読み込み済み」にしてループを止める
         st.session_state.is_timer_loaded = True
 
 
 # --- 修正：ここから下は「一番左（スペースなし）」で配置します ---
 
-# 1. セッション初期化の実行
+# 1. セッション初期化の実行（必ず最初の方に配置）
 init_session()
 
 # 2. タイマー：計測 ＆ 安全装置 ＆ スプシ自動保存
 now_ts = time.time()
+# 最後に「加算」または「操作」した時刻からの経過
 last_t = st.session_state.get("last_action_time", now_ts)
 elapsed_t = now_ts - last_t
 
+# --- 活動判定：300秒（5分）以内の動きなら加算 ---
 if elapsed_t < 300:
     st.session_state.is_sleeping = False
+
+    # 1秒以上の経過をメモリに積み上げる
     if elapsed_t >= 1.0:
         add_sec = int(elapsed_t)
+
+        # 🌟 ガードレール：異常値をカット
         if add_sec > 300:
             add_sec = 0
 
+        # ブラウザ表示用の数値を更新
         st.session_state.daily_seconds += add_sec
         if "total_seconds" in st.session_state:
             st.session_state.total_seconds += add_sec
 
+        # スプシ送信用の貯金箱
         if "unsynced_seconds" not in st.session_state:
             st.session_state.unsynced_seconds = 0
         st.session_state.unsynced_seconds += add_sec
 
-        if st.session_state.unsynced_seconds >= 600:
+        # スプシへの自動保存（60秒たまったら）
+        if st.session_state.unsynced_seconds >= 60:
             sync_timer_to_row2(st.session_state.unsynced_seconds)
             st.session_state.unsynced_seconds = 0
             st.session_state.last_sync_time = now_ts
 
+        # 最後に計測した時刻を更新
         st.session_state.last_action_time = now_ts
+
 else:
+    # 5分以上経過＝休憩中
     st.session_state.is_sleeping = True
+    # 放置からの復帰に備えて時刻をリセット
     st.session_state.last_action_time = now_ts
+
+# --- 修正：ここまで ---
 
 # =============================================================================
 # 9. サイドバー UI 実装 (2026年 爆速・筋肉質版)
@@ -2729,28 +2664,6 @@ if not st.session_state.mode:
 
     # 🌟 2. 履歴データの読み込みとグループ分け
     h_list = db.get("history", [])
-    # --- 📊 ここを追加：全履歴から教科ごとの実施回数をカウント ---
-    from collections import Counter
-
-    all_counts = []
-    for x in h_list:
-        # 表示時と同じクレンジングを行う
-        r = (
-            str(x.get("教科", ""))
-            .replace("検索：", "")
-            .replace("検索:", "")
-            .replace("検索", "")
-            .replace("：", "")
-            .replace(":", "")
-        )
-        ws = r.replace("　", " ").split()
-        u = []
-        for w in ws:
-            if w not in u:
-                u.append(w)
-        all_counts.append(" ".join(u).strip())
-    counts_map = Counter(all_counts)
-    # --------------------------------------------------------
     if h_list:
         now_d = datetime.now(JST).date()
         start_w = now_d - timedelta(days=now_d.weekday())
@@ -2784,27 +2697,9 @@ if not st.session_state.mode:
                 for h in items:
                     tid = h.get("ID")
 
-                    # --- 🎨 判定と準備（カラー帯の前に計算を終わらせる） ---
-                    raw_subject = str(h.get("教科", ""))
-                    temp_text = (
-                        raw_subject.replace("検索：", "")
-                        .replace("検索:", "")
-                        .replace("検索", "")
-                        .replace("：", "")
-                        .replace(":", "")
-                    )
-                    words = temp_text.replace("　", " ").split()
-                    unique_words = []
-                    for w in words:
-                        if w not in unique_words:
-                            unique_words.append(w)
-                    clean_subject = " ".join(unique_words).strip()
-
-                    # 📊 実施回数の取得とテキスト作成
-                    play_count = counts_map.get(clean_subject, 0)
-                    count_text = f" ｜ 📊 {play_count}回目"
-
+                    # --- 🎨 得点に基づいたカラー・メッセージ判定 ---
                     score_raw = h.get("得点")
+                    # 🌟 判定：得点がない、空、または「未実施」という文字が含まれる場合
                     is_new = (
                         score_raw is None
                         or score_raw == ""
@@ -2812,40 +2707,52 @@ if not st.session_state.mode:
                     )
 
                     try:
-                        score_num = (
-                            float(str(score_raw).split("点")[0]) if not is_new else 0
-                        )
+                        if not is_new:
+                            # 数値だけを取り出す（例: "85.2点" -> 85.2）
+                            score_num = float(str(score_raw).split("点")[0])
+                        else:
+                            score_num = 0
                     except Exception:
                         score_num = 0
 
                     # 🌟 崩れない標準の枠（コンテナ）
                     with st.container(border=True):
-                        # 👑 一番上の帯に「回数」を表示
+                        # 👑 状態に応じて「一番上の帯」の色とアイコンを完全分離
                         if is_new:
+                            # ✨ 作った直後：青色（Info）で「未実施」を表現
                             st.info(
-                                f"🆕 NEW MISSION：未実施の新しい課題です。{count_text}"
+                                "🆕 NEW MISSION：未実施の新しい課題です。挑戦しよう！"
                             )
-                        elif score_num == 100:
-                            st.success(
-                                f"🥇【極】 完璧な満点！ 1位合格 🎖️ ({score_raw}){count_text}"
-                            )
-                        elif score_num >= 90:
-                            st.success(
-                                f"🥈【秀】 素晴らしい！ あと一歩 🏆 ({score_raw}){count_text}"
-                            )
-                        elif score_num >= 80:
-                            st.warning(f"🥉【優】 合格！ 🎉 ({score_raw}){count_text}")
-                        else:
-                            st.write(f"📝 実施済み ({score_raw}){count_text}")
 
-                        # --- カラム設定 ---
-                        c_sel, c_bdg, c_info, c_go, c_sp, c_pq, c_pa = st.columns(
-                            [0.4, 1.0, 2.1, 1.2, 0.1, 0.8, 0.8]
+                        elif score_num == 100:
+                            # 🥇 1位：濃い緑
+                            st.success(f"🥇【極】 完璧な満点！ 1位合格 🎖️ ({score_raw})")
+
+                        elif score_num >= 90:
+                            # 🥈 2位：薄い緑
+                            st.success(
+                                f"🥈【秀】 素晴らしい！ あと一歩で満点 🏆 ({score_raw})"
+                            )
+
+                        elif score_num >= 80:
+                            # 🥉 3位：黄色（合格）
+                            st.warning(
+                                f"🥉【優】 合格！ 記述テストの資格あり 🎉 ({score_raw})"
+                            )
+
+                        else:
+                            # 80点未満：灰色
+                            st.write(f"📝 実施済み ({score_raw})")
+
+                        # --- 上段：情報とメインボタン（ここから中身） ---
+                        # 🛠️ 6列設定 [チェック, 情報, 特訓, 余白, 題, 答]
+                        c_sel, c_info, c_go, c_sp, c_pq, c_pa = st.columns(
+                            [0.4, 3.1, 1.2, 0.1, 0.8, 0.8]
                         )
 
                         # 1. チェックボックス
                         is_checked = c_sel.checkbox(
-                            "選択", key=f"sel_{lbl}_{tid}", label_visibility="collapsed"
+                            "選択", key=f"sel_{tid}", label_visibility="collapsed"
                         )
                         if is_checked and tid not in st.session_state.delete_list:
                             st.session_state.delete_list.append(tid)
@@ -2854,27 +2761,41 @@ if not st.session_state.mode:
                             st.session_state.delete_list.remove(tid)
                             st.rerun()
 
-                        # 2. バッジ表示
-                        target_cat = unique_words[0] if unique_words else "すべて"
-                        badge_html = get_badge_html(target_cat)
-                        c_bdg.markdown(
-                            f"<div style='display: flex; justify-content: center; align-items: center; height: 75px;'>{badge_html}</div>",
-                            unsafe_allow_html=True,
+                        # 2. 情報表示
+                        # 🌟 重複した単語を確実に1つにまとめる処理
+                        raw_subject = str(h.get("教科", ""))
+
+                        # ① まず不要な「検索」や「：」「:」を消去
+                        # ※ ここで「temp_text」という名前で定義します
+                        temp_text = (
+                            raw_subject.replace("検索：", "")
+                            .replace("検索:", "")
+                            .replace("検索", "")
+                            .replace("：", "")
+                            .replace(":", "")
                         )
 
-                        # 3. 情報表示（日付と教科名のみ）
+                        # ② 全角スペースを半角に統一して分割
+                        words = temp_text.replace("　", " ").split()
+
+                        # ③ 重複を除去（順番を維持したまま1つにする）
+                        unique_words = []
+                        for w in words:
+                            if w not in unique_words:
+                                unique_words.append(w)
+
+                        clean_subject = " ".join(unique_words).strip()
+
                         c_info.markdown(
-                            f"<div style='margin-top: 10px;'>"
-                            f"<small style='color:#bbb;'>{h.get('日付')} | {tid}</small><br>"
-                            f"<strong style='font-size:22px; color:#333;'>{clean_subject}</strong>"
-                            f"</div>",
+                            f"<small style='color:#888;'>{h.get('日付')} | `{tid}`</small><br>"
+                            f"<strong style='font-size:18px;'>{clean_subject}</strong>",
                             unsafe_allow_html=True,
                         )
 
-                        # 4. ▶️ スタート（キー重複対策済み）
+                        # 3. ▶️ スタート
                         if c_go.button(
                             "▶️ スタート",
-                            key=f"go_{lbl}_{tid}",
+                            key=f"go_{tid}",
                             type="primary",
                             use_container_width=True,
                         ):
@@ -2889,67 +2810,69 @@ if not st.session_state.mode:
                                 "show_options",
                                 "attempted_indices",
                                 "active_q_id",
-                                "current_opts",
+                                "current_opts",  # 🌟 これらを必ず入れる
                             ]
                             for k in keys_to_reset:
                                 if k in st.session_state:
                                     del st.session_state[k]
 
+                            # 🌟 明示的に空のセットで初期化
                             st.session_state.attempted_indices = set()
-                            st.session_state.index = int(h.get("進捗", 0))
-                            st.session_state.active_mission_id = tid
-                            st.session_state.mode = "training"
+                            st.session_state.show_options = False
+                            st.session_state.correct_cache = []
+                            st.session_state.index = 0
+                            st.session_state.correct_count = 0
 
+                            skip_indices = get_skip_indices(str(h.get("除外", "")))
                             q_json = json.loads(h.get("問題リスト(JSON)", "[]"))
                             base_qs = [
                                 next((q for q in flat_pool if q["q"] == t), None)
                                 for t in q_json
                             ]
-                            skip_indices = get_skip_indices(str(h.get("除外", "")))
                             st.session_state.questions = [
                                 q
                                 for i, q in enumerate(base_qs[:30])
                                 if q and (i + 1) not in skip_indices
                             ]
+                            st.session_state.index = int(h.get("進捗", 0))
+                            st.session_state.active_mission_id = tid
+                            st.session_state.mode = "training"
                             st.rerun()
 
-                        # 5. 📄 題 / 🔑 答
+                        # 4. 📄 題 / 🔑 答
                         with c_sp:
-                            st.write("")
+                            st.write("")  # スペース用
+
                         if c_pq.button(
-                            "📄 題", key=f"pq_{lbl}_{tid}", use_container_width=True
+                            "📄 題", key=f"pq_{tid}", use_container_width=True
                         ):
+                            q_json = json.loads(h.get("問題リスト(JSON)", "[]"))
+                            target_qs = [
+                                next((q for q in flat_pool if q["q"] == t), None)
+                                for t in q_json
+                            ]
                             st.session_state.print_type = "q"
                             st.session_state.print_data = {
                                 "mode": h.get("教科"),
                                 "id": tid,
-                                "qs": [
-                                    next((q for q in flat_pool if q["q"] == t), None)
-                                    for t in json.loads(h.get("問題リスト(JSON)", "[]"))
-                                    if next((q for q in flat_pool if q["q"] == t), None)
-                                ],
+                                "qs": [q for q in target_qs if q],
                             }
                             st.rerun()
 
                         if c_pa.button(
-                            "🔑 答", key=f"pa_{lbl}_{tid}", use_container_width=True
+                            "🔑 答", key=f"pa_{tid}", use_container_width=True
                         ):
                             if st.session_state.get("parent_unlock_key") == "7777":
+                                q_json = json.loads(h.get("問題リスト(JSON)", "[]"))
+                                target_qs = [
+                                    next((q for q in flat_pool if q["q"] == t), None)
+                                    for t in q_json
+                                ]
                                 st.session_state.print_type = "a"
                                 st.session_state.print_data = {
                                     "mode": h.get("教科"),
                                     "id": tid,
-                                    "qs": [
-                                        next(
-                                            (q for q in flat_pool if q["q"] == t), None
-                                        )
-                                        for t in json.loads(
-                                            h.get("問題リスト(JSON)", "[]")
-                                        )
-                                        if next(
-                                            (q for q in flat_pool if q["q"] == t), None
-                                        )
-                                    ],
+                                    "qs": [q for q in target_qs if q],
                                 }
                                 st.rerun()
                             else:
@@ -2961,21 +2884,18 @@ if not st.session_state.mode:
                         memo_val = c_m1.text_input(
                             "📝 メモ",
                             value=str(h.get("メモ", "")),
-                            key=f"memo_{lbl}_{tid}",
+                            key=f"memo_{tid}",
                             label_visibility="collapsed",
                             placeholder="メモを入力...",
                         )
                         skip_val = c_m2.text_input(
                             "✂️ 除外",
                             value=str(h.get("除外", "")),
-                            key=f"skip_{lbl}_{tid}",
+                            key=f"skip_{tid}",
                             label_visibility="collapsed",
                             placeholder="除外番号...",
                         )
-
-                        if c_m3.button(
-                            "💾", key=f"sv_{lbl}_{tid}", use_container_width=True
-                        ):
+                        if c_m3.button("💾", key=f"sv_{tid}", use_container_width=True):
                             try:
                                 gc = gspread.authorize(get_creds())
                                 sh_h = gc.open("study_stats_db").worksheet("history")
@@ -2988,7 +2908,6 @@ if not st.session_state.mode:
                                     st.toast("更新しました", icon="✅")
                             except Exception:
                                 st.error("保存失敗")
-                    # 🌟 修正：余計な st.markdown("</div>") は削除しました
 
                     # 🌟 カード枠の終了（ここで div を閉じます）
                     st.markdown("</div>", unsafe_allow_html=True)
@@ -3572,30 +3491,12 @@ else:
                             key=f"sh_f_{idx}",
                             use_container_width=True,
                         ):
-                            # 正解の取得（最初のスラッシュまで）
-                            if "数学" in str(q.get("category", "")):
-                                # 🌟 数学の場合は / を「分数」として使うので、分割せずにそのまま正解とする
-                                cv = clean_text(ans_raw)
-                            else:
-                                # 数学以外は従来通り、/ を「別の正解」の区切りとして最初の1つを取る
-                                cv = clean_text(ans_raw.split("/")[0].split("／")[0])
-
-                            # 🌟 数学なら「,$」で分け、それ以外は通常のカンマで分ける
-                            d_text = str(q.get("dummy", ""))
-                            if "数学" in str(q.get("category", "")):
-                                # 読み込み時に ",$" で結合したため、ここで正しくバラす
-                                d_list = d_text.split(",$")
-                            else:
-                                # 数学以外は従来通りの分割
-                                d_list = re.split(r"[,、]", d_text)
-
+                            cv = clean_text(ans_raw.split("/")[0].split("／")[0])
                             all_d = [
                                 clean_text(d)
-                                for d in d_list
+                                for d in re.split(r"[,、]", str(q.get("dummy", "")))
                                 if d.strip() and clean_text(d) != cv
                             ]
-
-                            # 選択肢のシャッフルと生成
                             raw_opts = [cv] + random.sample(all_d, min(len(all_d), 3))
                             st.session_state.current_opts = random.sample(
                                 raw_opts, len(raw_opts)
