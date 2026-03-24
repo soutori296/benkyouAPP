@@ -89,10 +89,18 @@ def sync_timer_to_row2(added_seconds):
     スプレッドシートの2行目（A2:D2）を更新し、アプリ内の表示変数も最新にする。
     インデックス: 0=Date(A), 1=Today(B), 2=Total(C), 3=LastAdded(D)
     """
+    # 🌟【追加：ガードレール】初期化のズレや放置による異常値を防ぐ
+    # 1回の操作（ボタン押しやカンバス記入）で300秒(5分)以上増えるのは異常とみなし、0秒にする
+    if added_seconds > 300:
+        added_seconds = 0
+    if added_seconds < 0:
+        added_seconds = 0
+
     try:
         from datetime import datetime
         import re
         import streamlit as st
+        import gspread  # get_creds()の中で使っているかもしれませんが、念のため
 
         # 1. Googleシートに接続
         creds = get_creds()
@@ -105,18 +113,14 @@ def sync_timer_to_row2(added_seconds):
         def safe_int(val):
             if not val:
                 return 0
+            # 数字以外を除去（カンマなどが入っている場合対策）
             num_str = re.sub(r"[^0-9]", "", str(val))
             return int(num_str) if num_str else 0
 
         # --- データの読み込み ---
-        # A列(日付): index 0
         raw_sheet_date = str(row_data[0]) if len(row_data) > 0 else ""
         sheet_date = raw_sheet_date.replace("-", "/").strip()
-
-        # B列(Today): index 1
         current_today_total = safe_int(row_data[1]) if len(row_data) > 1 else 0
-
-        # C列(Total): index 2
         current_total = safe_int(row_data[2]) if len(row_data) > 2 else 0
 
         today_str = datetime.now().strftime("%Y/%m/%d")
@@ -126,7 +130,7 @@ def sync_timer_to_row2(added_seconds):
             print(f"🌅 日付変更を検知: {sheet_date} -> {today_str} (Todayをリセット)")
             current_today_total = 0
 
-        # 5. 加算処理（今回の秒数をプラス）
+        # 5. 加算処理（ガードレールを通った後の added_seconds を使用）
         new_today_total = current_today_total + added_seconds
         new_total = current_total + added_seconds
 
@@ -143,20 +147,19 @@ def sync_timer_to_row2(added_seconds):
             ],
         )
 
-        # ✨ 7. 【重要】アプリ内の表示用変数（箱）を最新の数字に更新
-        # これにより、表示側の c1.metric や c2.metric が正しい数字を掴めます
+        # ✨ 7. アプリ内の表示用変数（箱）を最新の数字に更新
         st.session_state.daily_seconds = new_today_total
         st.session_state.total_seconds = new_total
 
-        print(f"✅ 同期完了: 本日={new_today_total}s, 累計={new_total}s")
+        print(
+            f"✅ 同期完了: 今回={added_seconds}s, 本日={new_today_total}s, 累計={new_total}s"
+        )
 
-        # 🔄 8. 画面を強制的に再描画（これで 0分 が ◯分 にパッと変わる）
-
-        # 戻り値として「本日分」を返しておく
         return new_today_total
 
     except Exception as e:
         print(f"❌ Timer Error: {e}")
+        # エラー時は現在の値を保持して返す
         return st.session_state.get("daily_seconds", 0)
 
 
