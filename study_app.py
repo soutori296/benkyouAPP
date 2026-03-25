@@ -1635,9 +1635,13 @@ with st.sidebar:
             key="panel_stop_btn_fixed",
         ):
             with st.spinner("記録中..."):
-                # 1. データをスプシへ書き込み
+                # 🌟 【重要】まず、今この瞬間までの「学習時間」を確定させてスプシへ送る
+                update_study_timer(force_write=True)
+
+                # 1. データをスプシへ書き込み（正誤など）
                 batch_save_to_db()
-                # 🌟 2. キャッシュをクリア（ホームに戻った時に最新の統計を表示するため）
+
+                # 2. キャッシュをクリア
                 st.cache_data.clear()
 
             # 3. 画面状態をリセット
