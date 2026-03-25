@@ -24,6 +24,35 @@ if "last_action_time" not in st.session_state:
     st.session_state.last_action_time = time.time()
 if "is_sleeping" not in st.session_state:
     st.session_state.is_sleeping = False
+# 1. まずアプリの冒頭（関数定義エリア）にこれを作成する
+
+
+def update_study_timer(force_write=False):
+    now = time.time()
+    # 初期化
+    if "last_action_time" not in st.session_state:
+        st.session_state.last_action_time = now
+    if "unsynced_seconds" not in st.session_state:
+        st.session_state.unsynced_seconds = 0
+
+    # 1. 前回の操作からの差分を計算
+    diff = now - st.session_state.last_action_time
+    st.session_state.last_action_time = now  # 起点を今に更新
+
+    # 2. 5分(300秒)以内の自然な操作なら、メモリ(unsynced_seconds)に貯める
+    if 0 < diff < 300:
+        st.session_state.unsynced_seconds += diff
+        # もし画面表示用の変数(today_sum等)があれば、ここで一緒に増やすとリアルタイムに動きます
+        if "today_sum" in st.session_state:
+            st.session_state.today_sum += diff
+
+    # 3. 10分(600秒)溜まったか、強制保存フラグがある時だけスプシへ送る
+    if st.session_state.unsynced_seconds > 600 or (
+        force_write and st.session_state.unsynced_seconds > 0
+    ):
+        # 既存のスプシ書き込み関数を呼び出す
+        sync_timer_to_row2(st.session_state.unsynced_seconds)
+        st.session_state.unsynced_seconds = 0  # 送ったらバケツを空にする
 
 
 def get_creds():
@@ -83,18 +112,9 @@ def clean_text(text):
     return unicodedata.normalize("NFKC", str(text))
 
 
-# --- [1] 作業員：実際にシートを書き換える担当 ---
 def sync_timer_to_row2(added_seconds):
-    """
-    スプレッドシートの2行目（A2:D2）を更新し、アプリ内の表示変数も最新にする。
-    インデックス: 0=Date(A), 1=Today(B), 2=Total(C), 3=LastAdded(D)
-    """
-    # 🌟【追加：ガードレール】初期化のズレや放置による異常値を防ぐ
-    # 1回の操作（ボタン押しやカンバス記入）で300秒(5分)以上増えるのは異常とみなし、0秒にする
-    if added_seconds > 300:
-        added_seconds = 0
-    if added_seconds < 0:
-        added_seconds = 0
+    if added_seconds <= 0:
+        return
 
     try:
         from datetime import datetime
@@ -418,22 +438,27 @@ inject_muscular_styles()
 
 def format_time(total_seconds, is_today=False):
     """
-    is_today=True の場合は、何分でも「◯分」と表示。
+    is_today=True の場合は、何分でも「◯分」と表示（小数点なし）。
     is_today=False（全累計）の場合は、
-    - 100時間未満: 「◯時間◯分」
+    - 100時間未満: 「◯時間◯分」（小数点なし）
     - 100時間以上: 「◯.◯時間」（小数点第1位で四捨五入）
     """
+    # 1. 本日分（すべて「分」で表示）
     if is_today:
-        m = total_seconds // 60
+        m = int(total_seconds // 60)  # 🌟intで確実に整数化
         return f"{m}分"
 
+    # 2. 全累計
     h_raw = total_seconds / 3600
+
+    # 100時間以上の時だけ小数点を出す
     if h_raw >= 100:
-        # 100時間以上の場合は 100.3時間 のような表記（四捨五入）
         return f"{round(h_raw, 1)}時間"
 
+    # 100時間未満の時は「◯時間◯分」
     h = int(h_raw)
-    m = (total_seconds % 3600) // 60
+    m = int((total_seconds % 3600) // 60)  # 🌟ここもintで整数化
+
     if h > 0:
         return f"{h}時間{m}分"
     else:
@@ -1086,9 +1111,11 @@ def batch_save_to_db(custom_mode=None, custom_qs=None):
             st.cache_data.clear()
             st.rerun()
 
-        # C. タイマー同期
-        if st.session_state.get("unsynced_seconds", 0) > 0:
-            sync_timer_to_row2(st.session_state.unsynced_seconds)
+        # C. タイマー同期（10分 = 600秒 溜まった時だけ実行）
+        # ※ 以前より通信回数を劇的に減らし、パフォーマンスを向上させます
+        unsynced = st.session_state.get("unsynced_seconds", 0)
+        if unsynced > 600:
+            sync_timer_to_row2(unsynced)
             st.session_state.unsynced_seconds = 0
 
         # D. 習熟度（Mastery）シートの更新（🌟新規追加＆一括更新の完全対応）
@@ -1505,10 +1532,13 @@ if elapsed_t < 300:
         st.session_state.unsynced_seconds += add_sec
 
         # スプシへの自動保存（600秒たまったら）
-        if st.session_state.unsynced_seconds >= 600:
+        # 🌟 get() を使うことで、変数が万が一空でもエラーにならないようにします
+        if st.session_state.get("unsynced_seconds", 0) >= 600:
+            # 🌟 sync_timer_to_row2 側の「300秒制限」を消していることが前提です！
             sync_timer_to_row2(st.session_state.unsynced_seconds)
             st.session_state.unsynced_seconds = 0
-            st.session_state.last_sync_time = now_ts
+            # last_sync_time の更新（もし変数 now_ts が定義されていればそのままでOK）
+            st.session_state.last_sync_time = time.time()
 
         # 最後に計測した時刻を更新
         st.session_state.last_action_time = now_ts
@@ -1584,9 +1614,15 @@ with st.sidebar:
         # 🔄 同期：キャッシュも完全にクリアする仕様
         if col_sync.button("🔄 同期", use_container_width=True, key="sync_final_ver"):
             with st.spinner("最新データを取得中..."):
-                # 🌟 キャッシュを空にして、スプシから直接読み直させる
+                # 🌟 1. まずタイマーの「貯金箱」を強制的にスプシへ送る
+                update_study_timer(force_write=True)
+
+                # 2. キャッシュを空にして、スプシから直接読み直させる
                 st.cache_data.clear()
+
+                # 3. その他の進捗データなどを保存
                 batch_save_to_db()
+
             st.toast("最新の状態に更新しました！", icon="🔄")
             st.rerun()
 
@@ -3179,9 +3215,11 @@ else:
                                 use_container_width=True,
                                 disabled=is_kj_waiting,
                             ):
+                                # 🌟 タイマーを更新（判定した瞬間の時間を貯金箱へ）
+                                update_study_timer(force_write=False)
+
                                 s_p, _ = get_kanji_score(cv_res, char, stroke_setting)
                                 if s_p > 0:
-                                    # 🌟 3. 判定に成功した瞬間にスコアを更新（これでバーが即座に動く）
                                     if sc_val == 0:
                                         st.session_state.kj_scores[i] = 34
                                     elif sc_val == 34:
@@ -3189,7 +3227,6 @@ else:
                                     elif sc_val == 66:
                                         st.session_state.kj_scores[i] = 100
 
-                                    # 最後の100%到達時以外は、クリア待ち状態にする
                                     if st.session_state.kj_scores[i] < 100:
                                         st.session_state[clear_key] = True
 
@@ -3208,6 +3245,9 @@ else:
                                 use_container_width=True,
                                 type="primary" if is_kj_waiting else "secondary",
                             ):
+                                # 🌟 タイマーを更新（書き直しやクリアの操作も学習時間にする）
+                                update_study_timer(force_write=False)
+
                                 st.session_state[clear_key] = False
                                 st.session_state[f"reset_{idx}_{i}"] = r_key + 1
                                 st.rerun()
@@ -3535,7 +3575,7 @@ else:
                     st.empty()
 
         # =========================================================
-        # 🌟 3. 最下部ナビゲーション（一列に統合：削除・前へ・確定・飛ばす・並べ替え操作）
+        # 🌟 3. 最下部ナビゲーション（タイマー同期対応版）
         # =========================================================
         st.markdown("---")
         # カラム比率: [削除, 前へ, 確定, 飛ばす, 並び替え専用操作エリア]
@@ -3543,11 +3583,13 @@ else:
 
         with n_col[0]:  # 💣 削除
             if st.button("💣", key=f"db_del_x_{idx}"):
+                update_study_timer(force_write=False)  # 🌟時間を記録
                 st.session_state.confirm_delete = True
                 st.rerun()
 
         with n_col[1]:  # ⬅️ 前へ
             if st.button("⬅️ 前へ", key=f"nv_p_x_{idx}", use_container_width=True):
+                update_study_timer(force_write=False)  # 🌟時間を記録
                 if st.session_state.index > 0:
                     st.session_state.index -= 1
                     st.session_state.active_q_id = None
@@ -3556,7 +3598,6 @@ else:
                     st.rerun()
 
         with n_col[2]:  # ✅ 確定 / 次へ / 再挑戦
-            # 🌟 共通設定：開始位置を揃えるための幅
             L_WIDTH = "95px"
 
             if is_kanji:
@@ -3572,6 +3613,7 @@ else:
                     use_container_width=True,
                     disabled=not all_clear,
                 ):
+                    update_study_timer(force_write=False)  # 🌟時間を記録
                     if target_id not in st.session_state.attempted_indices:
                         if "session_results" not in st.session_state:
                             st.session_state.session_results = []
@@ -3591,42 +3633,45 @@ else:
                     st.rerun()
 
             elif st.session_state.get("show_result"):
-                # --- 🌟 結果表示中のボタン（ここが重要） ---
+                # --- 結果表示中のボタン ---
                 is_correct = st.session_state.get("last_is_correct", False)
 
                 if actual_scramble and not is_correct:
-                    # 🔴 並べ替えで不正解の時だけ「もう一度」
+                    # 🔴 リトライ
                     if st.button(
                         "🔄 リトライ",
                         key=f"retry_x_{idx}",
                         type="primary",
                         use_container_width=True,
                     ):
+                        update_study_timer(force_write=False)  # 🌟時間を記録
                         st.session_state["user_ans_order"] = []
                         st.session_state.show_result = False
                         st.rerun()
                 else:
-                    # 🟢 正解時、または2択・4択の時は「次へ」
+                    # 🟢 次へ
                     if st.button(
                         "次へ ➡️",
                         key=f"nx_x_{idx}",
                         type="primary",
                         use_container_width=True,
                     ):
+                        update_study_timer(force_write=False)  # 🌟時間を記録
                         st.session_state.index += 1
                         st.session_state.active_q_id = None
-                        st.session_state.show_result = False  # フラグを落として次へ
+                        st.session_state.show_result = False
                         st.session_state.show_options = False
                         st.rerun()
 
             elif actual_scramble:
-                # --- 並べ替え確定（未回答時） ---
+                # --- 並べ替え確定 ---
                 if st.button(
                     "✅ 確定",
                     key=f"fx_x_{idx}",
                     type="primary",
                     use_container_width=True,
                 ):
+                    update_study_timer(force_write=False)  # 🌟時間を記録
                     u_list = st.session_state.get("user_ans_order", [])
                     u_ans = "".join([f_clean(w) for w in u_list])
                     a_ans = f_clean(ans_raw)
@@ -3662,17 +3707,11 @@ else:
         with n_col[3]:  # ⏩ 飛ばす
             is_result_showing = st.session_state.get("show_result", False)
             is_correct = st.session_state.get("last_is_correct", False)
-
-            # 🌟 修正ポイント：locals() を使って変数が存在するかチェックし、
-            # 存在しない場合（漢字モードなど）は False になるようにします
             is_scramble_mode = locals().get("actual_scramble", False)
 
-            # --- 🌟 無効化条件の判定 ---
             if is_scramble_mode and is_result_showing and not is_correct:
-                # 【並べ替え】かつ【結果表示中】かつ【不正解】の時は、特別に「飛ばす」を有効にする
                 should_disable_skip = False
             else:
-                # それ以外（正解した時や漢字完了時）は、これまで通り無効にする
                 is_kj_done = (
                     all(
                         v == 100 for v in st.session_state.get("kj_scores", {}).values()
@@ -3682,30 +3721,26 @@ else:
                 )
                 should_disable_skip = is_result_showing or is_kj_done
 
-            # ボタンの実行
             if st.button(
                 "⏩ 飛ばす",
                 key=f"sk_x_{idx}",
                 use_container_width=True,
                 disabled=should_disable_skip,
             ):
+                update_study_timer(force_write=False)  # 🌟時間を記録
                 if "session_results" not in st.session_state:
                     st.session_state.session_results = []
-
-                # 飛ばしたことを記録して次へ
                 st.session_state.session_results.append(
                     {"q": q.get("q"), "cat": cat, "correct": False, "id": target_id}
                 )
                 st.session_state.index += 1
                 st.session_state.active_q_id = None
-                st.session_state.show_result = False  # 次の問題のためにリセット
+                st.session_state.show_result = False
                 st.session_state.show_options = False
                 st.rerun()
 
-        with n_col[4]:  # 🌟 並び替え専用操作（右端の余白）
-            # 🌟 修正ポイント：actual_scramble が定義されていない場合でもエラーにならないようにする
+        with n_col[4]:  # 🌟 並び替え操作
             is_scramble_mode = locals().get("actual_scramble", False)
-
             if is_scramble_mode and not st.session_state.get("show_result"):
                 u_ans_list = st.session_state.get("user_ans_order", [])
                 if u_ans_list:
@@ -3714,17 +3749,17 @@ else:
                         if st.button(
                             "⬅️1字", key=f"back_op_{idx}", use_container_width=True
                         ):
-                            if st.session_state["user_ans_order"]:
-                                st.session_state["user_ans_order"].pop()
-                                st.rerun()
+                            update_study_timer(force_write=False)  # 🌟時間を記録
+                            st.session_state["user_ans_order"].pop()
+                            st.rerun()
                     with c_sub2:
                         if st.button(
                             "🔄全消去", key=f"res_op_{idx}", use_container_width=True
                         ):
+                            update_study_timer(force_write=False)  # 🌟時間を記録
                             st.session_state["user_ans_order"] = []
                             st.rerun()
 
-        # --- 共通：削除確認ダイアログ等 ---
         st.caption(f"ID: {target_id}")
         if st.session_state.get("confirm_delete", False):
             st.warning("完全に削除しますか？")
@@ -3735,6 +3770,7 @@ else:
                 type="primary",
                 use_container_width=True,
             ):
+                update_study_timer(force_write=False)  # 🌟時間を記録
                 if delete_question_by_id(target_id):
                     st.session_state.questions.pop(idx)
                     st.cache_data.clear()
@@ -3746,3 +3782,9 @@ else:
 
 # 🔊 最後に音声をまとめて実行
 execute_queued_sound()
+
+# 🌟 最後に「10分溜まったか」を確認してスプシに書く
+update_study_timer(force_write=False)
+if st.session_state.get("unsynced_seconds", 0) > 600:
+    sync_timer_to_row2(st.session_state.unsynced_seconds)
+    st.session_state.unsynced_seconds = 0
