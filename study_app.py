@@ -163,47 +163,6 @@ def sync_timer_to_row2(added_seconds):
         return st.session_state.get("daily_seconds", 0)
 
 
-# --- [2] 監督役：時間を測って、作業員に指示を出す担当 ---
-def run_auto_timer_logic():
-    import time
-
-    now = time.time()
-
-    # 初回起動時の初期化
-    if "last_action_time" not in st.session_state:
-        st.session_state.last_action_time = now
-        st.session_state.last_sync_time = now  # 🌟 追加：最後に書き込んだ時刻
-        st.session_state.unsynced_seconds = 0  # 🌟 追加：未同期の秒数
-        return
-
-    # 前回の操作からの経過時間を計算
-    duration = int(now - st.session_state.last_action_time)
-
-    # 放置判定（5分以上は何もしない）
-    if 5 <= duration < 300:
-        # 🌟 とりあえず「未同期分」としてアプリ内のメモに貯める
-        st.session_state.unsynced_seconds += duration
-
-        # 🌟 前回の「書き込み」から60秒以上経っているかチェック
-        time_since_sync = now - st.session_state.get("last_sync_time", 0)
-
-        if time_since_sync >= 60:
-            # 60秒経っていれば、溜まった分を一気に書き込む！
-            sync_timer_to_row2(st.session_state.unsynced_seconds)
-
-            # 書き込んだのでメモをリセット
-            st.session_state.unsynced_seconds = 0
-            st.session_state.last_sync_time = now
-            print("📡 Googleへまとめて送信しました。")
-        else:
-            print(
-                f"⏳ アプリ内で蓄積中... (現在: {st.session_state.unsynced_seconds}s)"
-            )
-
-    # 今回の操作時刻を記録
-    st.session_state.last_action_time = now
-
-
 def match_study_filter(search_query, q_item):
     # --- あなたが提示したコード（これでOK） ---
     if not search_query:
@@ -223,17 +182,23 @@ def to_pretty_display(text):
     if not isinstance(text, str):
         return text
 
-    # 1. $ を消去
+    import re
+
     t = text.replace("$", "")
 
-    # 2. 【新規追加】LaTeXのエスケープ記号（\% など）を普通の記号に戻す
-    # % や $ や _ などの前にある \ を取り除きます
+    # 1. LaTeXのエスケープ記号（\% など）を普通の記号に戻す
     escape_chars = ["%", "$", "_", "{", "}", "&", "#"]
     for char in escape_chars:
         t = t.replace(f"\\{char}", char)
 
-    # 3. 算数・数学の特殊記号（\times など）
+    # 2. 分数の変換 (\frac{a}{b} -> a/b)
+    t = re.sub(r"\\frac\{([^}]*)\}\{([^}]*)\}", r"\1/\2", t)
+
+    # 3. 算数・数学の特殊記号（ルート・角度を追加）
     replacements = {
+        "\\sqrt": "√",
+        "^\\circ": "°",
+        "\\circ": "°",
         "\\times": "×",
         "\\div": "÷",
         "\\pm": "±",
@@ -252,11 +217,10 @@ def to_pretty_display(text):
     for old, new in replacements.items():
         t = t.replace(old, new)
 
-    # 3. \text{...} の中身だけを取り出す（化学式などはここに含まれる）
+    # 4. \text{...} の中身だけを取り出す
     t = re.sub(r"\\text\{([^}]*)\}", r"\1", t)
 
-    # 4. 数学の変数を数式用イタリック文字に一括変換
-    # 教科書でよく使う文字を網羅（a-z）
+    # 5. 数学の変数を数式用イタリック文字に変換
     var_map = {
         "a": "𝑎",
         "b": "𝑏",
@@ -285,21 +249,17 @@ def to_pretty_display(text):
         "y": "𝑦",
         "z": "𝑧",
     }
-
-    # 独立したアルファベット1文字のみを変換（化学式の H や O、英語の don't などを避けるため）
     for eng, math in var_map.items():
-        # 🌟 修正ポイント：前後にアルファベットだけでなく「'（アポストロフィ）」がある場合も除外する
         pattern = rf"(^|[^a-zA-Z']){eng}([^a-zA-Z']|$)"
         t = re.sub(pattern, rf"\1{math}\2", t)
 
-    # 5. 下付き・上付き文字の変換
+    # 6. 下付き・上付き文字の変換
     sub_map = str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")
     t = re.sub(r"_\{?(\d+)\}?", lambda m: m.group(1).translate(sub_map), t)
-
     sup_map = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
     t = re.sub(r"\^\{?(\d+)\}?", lambda m: m.group(1).translate(sup_map), t)
 
-    # 6. 残った不要な中括弧を消去
+    # 7. 残った不要な中括弧を消去
     t = t.replace("{", "").replace("}", "")
 
     return t
@@ -358,78 +318,91 @@ st.set_page_config(
 
 
 def inject_muscular_styles():
-    """
-    Ruff F541対策としてraw stringを使用。
-    2026年以降のブラウザおよび印刷環境に最適化。
-    レモン色ボタン（lemon-box）の設定を追加。
-    """
     st.markdown(
         r"""
         <style>
-        /* --- 既存のスタイル --- */
-        [data-testid="stSidebar"] { 
-            min-width: 300px !important; 
-            max-width: 300px !important; 
+        /* 1. 全体の土台 */
+        .block-container { padding-top: 3.0rem !important; }
+
+        /* 2. 🌟 サイドバー：すべての見出し(h3)を完全に統一 🌟 */
+        [data-testid="stSidebar"] h3 {
+            font-size: 0.95rem !important; /* サイズを統一 */
+            font-weight: 800 !important;
+            color: #475569 !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important; /* すべて中央揃えに統一 */
+            gap: 8px !important; /* アイコンと文字の間の距離を一定に */
+            margin-bottom: -8px !important;
+            margin-top: 20px !important; /* 見出しの上の余白を統一 */
         }
+        
+        /* 3. 🌟 STATUSセクションの微調整 🌟 */
+        /* 最初に見える見出しだけ、上の空白を少し詰め気味にする */
+        [data-testid="stSidebar"] .stMarkdown:first-child h3 {
+            margin-top: -10px !important;
+        }
+
+        /* 🌟 STATUSカード：完全センター ＆ 100時間耐久仕様 🌟 */
+        [data-testid="stSidebar"] div[data-testid="stMetric"] {
+            background: #ffffff;
+            border-radius: 10px;
+            padding: 5px 8px !important; /* 左右を微調整して内幅を確保 */
+            margin-bottom: 6px !important;
+            border: 1px solid #eef2f6;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.02);
+            /* カード内のテキスト配置を中央に */
+            text-align: center !important;
+        }
+
         [data-testid="stSidebar"] [data-testid="stMetricLabel"] {
-            font-size: 0.85rem !important;
-            font-weight: bold !important;
+            font-size: 0.72rem !important;
+            margin-bottom: -4px !important;
+            /* 🌟 アイコンと文字をセットで中央に寄せる 🌟 */
+            display: flex !important;
+            justify-content: center !important;
+            align-items: center !important;
+            gap: 4px !important;
         }
+
         [data-testid="stSidebar"] [data-testid="stMetricValue"] {
-            font-size: 1.1rem !important;
-        }
-        div[data-testid="stHorizontalBlock"] > div:nth-child(1) [data-testid="stMetricValue"] {
-            padding-left: 8px !important;
-        }
-        div[data-testid="stHorizontalBlock"] > div:nth-child(2) [data-testid="stMetricLabel"],
-        div[data-testid="stHorizontalBlock"] > div:nth-child(2) [data-testid="stMetricValue"] {
-            text-align: right !important;
-            justify-content: flex-end !important;
-            padding-right: 18px !important;
-        }
-        [data-testid="stHorizontalBlock"] {
-            margin-bottom: -10px !important; 
+            /* 🌟 99時間59分（7文字）を収める設定 🌟 */
+            font-size: 0.98rem !important;
+            font-weight: 850 !important; /* 筋肉質な太さを強調 */
+            letter-spacing: -0.03em !important; /* わずかな字詰めで横幅節約 */
+            /* 数値を中央へ */
+            display: block !important;
+            text-align: center !important;
+            white-space: nowrap !important;
+            overflow: visible !important;
         }
 
-        /* 🌟 【追加：レモン色ボタン設定】 🌟 */
-        .lemon-box div.stButton > button {
-            background-color: #FFF9C4 !important; /* 薄いレモン色 */
-            color: #827717 !important;           /* 濃いオリーブ色 */
-            border: 2px solid #FBC02D !important; /* レモン色の枠線 */
-            border-radius: 10px !important;
-            font-weight: bold !important;
-            height: auto !important;
-            padding: 10px !important;
+        /* 4. 🌟 カテゴリ別進捗 🌟 */
+        [data-testid="stSidebar"] .stTable {
+            margin-top: 5px !important;
+            margin-bottom: 5px !important;
         }
-        .lemon-box div.stButton > button:hover {
-            background-color: #FFF176 !important; /* ホバーで少し明るく */
-            border-color: #FBC02D !important;
-            color: #827717 !important;
+        [data-testid="stSidebar"] table { font-size: 11px !important; }
+        [data-testid="stSidebar"] th, [data-testid="stSidebar"] td { padding: 4px 6px !important; }
+
+        /* 🌟 修正ポイント：パスワード欄（pass...）の上の隙間を詰める 🌟 */
+        [data-testid="stSidebar"] div[data-testid="stTextInput"] {
+            margin-top: -15px !important; /* 🌟 マイナス値で上に引っ張り上げる 🌟 */
+            padding-top: 0px !important;
         }
 
-        /* --- 印刷設定 --- */
-        @media print {
-            @page { size: 210mm 4000mm; margin: 15mm; }
-            section[data-testid="stSidebar"], header, .stButton, 
-            div[data-testid="stToolbar"], [data-testid="collapsedControl"], footer { 
-                display: none !important; 
-            }
-            .main .block-container, div[data-testid="stMainBlockContainer"], .stMain { 
-                display: block !important;
-                max-width: 100% !important; 
-                width: 100% !important; 
-                padding: 0 !important; 
-                margin: 0 !important;
-            }
-            .answer-box { 
-                border: 2px solid #000 !important; 
-                height: 240px; 
-                width: 100%; 
-                margin-bottom: 30px;
-                background: #fff !important;
-                -webkit-print-color-adjust: exact;
-            }
+        /* 5. 🌟 ボタン類の安定化 🌟 */
+        [data-testid="stSidebar"] .stButton > button {
+            min-height: 42px !important;
+            font-size: 15px !important;
+            margin-top: 4px !important;
+            border-radius: 8px !important;
         }
+
+        /* 6. メイン画面の筋肉質設定（維持） */
+        .main div.stButton button p { font-size: 20px !important; font-weight: 900 !important; }
+        .main div.stButton > button { min-height: 52px !important; width: 100% !important; }
+        .stMarkdown h3 { font-size: 20px !important; font-weight: 800 !important; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -1500,8 +1473,6 @@ def init_session():
         st.session_state.is_timer_loaded = True
 
 
-# --- 修正：ここから下は「一番左（スペースなし）」で配置します ---
-
 # 1. セッション初期化の実行（必ず最初の方に配置）
 init_session()
 
@@ -1533,8 +1504,8 @@ if elapsed_t < 300:
             st.session_state.unsynced_seconds = 0
         st.session_state.unsynced_seconds += add_sec
 
-        # スプシへの自動保存（60秒たまったら）
-        if st.session_state.unsynced_seconds >= 60:
+        # スプシへの自動保存（600秒たまったら）
+        if st.session_state.unsynced_seconds >= 600:
             sync_timer_to_row2(st.session_state.unsynced_seconds)
             st.session_state.unsynced_seconds = 0
             st.session_state.last_sync_time = now_ts
@@ -1583,12 +1554,12 @@ with st.sidebar:
         c4.metric("📝 解答数", f"{total_ans}問")
 
     # 📈 カテゴリ別進捗テーブル
-    st.write("**📈 カテゴリ別進捗**")
+
     if db.get("cat_stats"):
         st.dataframe(
             db["cat_stats"],
             width="stretch",
-            height=200,
+            height=248,
             hide_index=True,
             column_config={
                 "🚩 開拓率": st.column_config.NumberColumn("🚩 開拓率", format="%.1f%%")
@@ -1624,7 +1595,6 @@ with st.sidebar:
             "📝 中断",
             type="primary",
             use_container_width=True,
-            help="スプシに保存してホームに戻る",
             disabled=not is_active or is_parent,
             key="panel_stop_btn_fixed",
         ):
@@ -2974,18 +2944,19 @@ else:
         sub_cat = str(q.get("unit") or q.get("sub_category") or "").strip()
         ans_raw = str(q.get("a", "")).strip()
         target_id = str(q.get("id", f"no_id_{idx}"))
-        is_kanji = "漢字" in cat
 
-        # 🌟 ランクの変換処理を追加
+        # 🌟 ここで数学と漢字のフラグを確定させます
+        is_kanji = "漢字" in cat or "国語" in cat
+        is_math = "数学" in cat or any(kw in cat for kw in ["物理", "化学", "地学"])
+
+        is_kanji_mode = st.session_state.get("mode") == "kanji_canvas"
+        is_p_mode = st.session_state.get("parent_unlock_key") == "7777"
+
+        # ランク表示用
         rank_raw = str(q.get("rank", "")).upper().strip()
-        if rank_raw == "A":
-            rank_disp = "🟢必須"
-        elif rank_raw == "B":
-            rank_disp = "🟡応用"
-        elif rank_raw == "C":
-            rank_disp = "🔴発展"
-        else:
-            rank_disp = rank_raw if rank_raw else "未設定"
+        rank_disp = {"A": "🟢必須", "B": "🟡応用", "C": "🔴発展"}.get(
+            rank_raw, rank_raw if rank_raw else "未設定"
+        )
 
         is_p_mode = st.session_state.get("parent_unlock_key") == "7777"
 
@@ -3128,7 +3099,7 @@ else:
         # ✍️ 解答エリア
         # ---------------------------------------------------------
         if is_kanji:
-            # --- 漢字特訓モード（累計100点演出） ---
+            # --- 漢字特訓モード ---
             st.markdown(
                 r"<style>canvas.stCanvas { background-color: #ffffff !important; border: 1px solid #ddd !important; border-radius: 4px; width: 230px !important; height: 230px !important; }</style>",
                 unsafe_allow_html=True,
@@ -3152,14 +3123,13 @@ else:
                         )
                         continue
 
-                    # --- 漢字専用の変数管理 ---
                     sc_val = st.session_state.kj_scores[i]
                     clear_key = f"waiting_clear_{idx}_{i}"
                     if clear_key not in st.session_state:
                         st.session_state[clear_key] = False
                     is_kj_waiting = st.session_state[clear_key]
 
-                    # 🌟 不透明度設定 (0%:1.0, 34%:0.15, 66%:0.0, 100%:1.0)
+                    # 🌟 1. 不透明度設定 (100%時はクッキリ表示)
                     if sc_val == 0:
                         op = 1.0
                     elif sc_val == 34:
@@ -3167,12 +3137,11 @@ else:
                     elif sc_val == 66:
                         op = 0.0
                     else:
-                        op = 1.0
+                        op = 1.0  # 100%時
 
-                    # キャンバス内ガイド (66%以上は非表示。合格後も非表示)
-                    canvas_op = 0.0 if sc_val >= 66 else op
+                    # 🌟 2. キャンバス内ガイド (100%時は1.0で表示、66%時は非表示)
+                    canvas_op = 1.0 if sc_val == 100 else (0.0 if sc_val == 66 else op)
 
-                    # 🌟 上部の文字表示（不透明度を連動）
                     st.markdown(
                         f"<div style='text-align:center; font-weight:bold; opacity:{op}; transition: opacity 0.5s; color:{'#28a745' if sc_val == 100 else '#333'};'>"
                         f"{char} ({sc_val}%)</div>",
@@ -3180,7 +3149,6 @@ else:
                     )
 
                     with st.container(border=True):
-                        # お手本ガイド
                         st.markdown(
                             f"<div style='text-align:center;'><div style='font-size:55px; font-family:serif; opacity:{canvas_op};'>{char}</div>"
                             f"<div style='font-size:10px;'>{stroke_setting}画</div></div>",
@@ -3189,7 +3157,6 @@ else:
                         st.progress(sc_val / 100)
 
                         r_key = st.session_state.get(f"reset_{idx}_{i}", 0)
-                        # 🌟 100%合格時は描画ロック（transform）して筆跡を維持
                         d_mode = "transform" if sc_val == 100 else "freedraw"
 
                         cv_res = st_canvas(
@@ -3197,61 +3164,51 @@ else:
                             stroke_color="#000000",
                             height=230,
                             width=230,
-                            key=f"kj_cv_{idx}_{i}_{r_key}",
+                            key=f"kj_cv_vFinal_{idx}_{i}_{r_key}",
                             display_toolbar=False,
                             background_color="#ffffff",
                             update_streamlit=True,
                             drawing_mode=d_mode,
                         )
 
-                        # --- ボタンエリア ---
                         if sc_val < 100:
-                            # 判定ボタン (クリア待ちの間は押せない)
+                            # --- 判定ボタン ---
                             if st.button(
                                 "📮 判定",
                                 key=f"sc_{idx}_{i}",
                                 use_container_width=True,
-                                type="secondary",
                                 disabled=is_kj_waiting,
                             ):
-                                st.session_state.last_action_time = (
-                                    time.time()
-                                )  # 【追加】
                                 s_p, _ = get_kanji_score(cv_res, char, stroke_setting)
                                 if s_p > 0:
-                                    if sc_val == 66:
-                                        # 🌟 3回目(66%)合格：即座に100%にして筆跡をロック
+                                    # 🌟 3. 判定に成功した瞬間にスコアを更新（これでバーが即座に動く）
+                                    if sc_val == 0:
+                                        st.session_state.kj_scores[i] = 34
+                                    elif sc_val == 34:
+                                        st.session_state.kj_scores[i] = 66
+                                    elif sc_val == 66:
                                         st.session_state.kj_scores[i] = 100
-                                        st.session_state[clear_key] = False
-                                    else:
-                                        # 1,2回目合格：クリア待ちへ
+
+                                    # 最後の100%到達時以外は、クリア待ち状態にする
+                                    if st.session_state.kj_scores[i] < 100:
                                         st.session_state[clear_key] = True
+
                                     queue_sound("correct.mp3")
                                 else:
                                     queue_sound("wrong.mp3")
                                 st.rerun()
 
-                            # クリア / 書き直し
+                            # --- クリア / 書き直し ---
                             btn_label = (
                                 "✨ クリアして次へ" if is_kj_waiting else "🧽 書き直す"
                             )
-                            btn_type = "primary" if is_kj_waiting else "secondary"
                             if st.button(
                                 btn_label,
                                 key=f"cl_{idx}_{i}",
                                 use_container_width=True,
-                                type=btn_type,
+                                type="primary" if is_kj_waiting else "secondary",
                             ):
-                                if is_kj_waiting:
-                                    # クリアされたタイミングでお手本を薄くする
-                                    curr = st.session_state.kj_scores[i]
-                                    if curr == 0:
-                                        st.session_state.kj_scores[i] = 34
-                                    elif curr == 34:
-                                        st.session_state.kj_scores[i] = 66
-                                    st.session_state[clear_key] = False
-
-                                # キャンバスをリセット
+                                st.session_state[clear_key] = False
                                 st.session_state[f"reset_{idx}_{i}"] = r_key + 1
                                 st.rerun()
                         else:
@@ -3379,13 +3336,20 @@ else:
             # 🖥️ 問題表示ロジック（ラベル微拡大 ＆ 解答エリア削除済）
             # =========================================================
             if st.session_state.get("show_result"):
-                # 表示用の正解テキストを綺麗にする
-                display_ans = (
-                    to_pretty_display(str(ans_raw))
-                    .replace("/", " ")
-                    .replace(" ,", ",")
-                    .strip()
-                )
+                # 🌟 数学(is_math)判定を使って、表示用の正解テキストを加工
+                if is_math:
+                    # 数学のときはカンマ・読点をスペースに変換して見た目を統一
+                    display_ans = to_pretty_display(
+                        str(ans_raw).replace(",", " ").replace("、", " ")
+                    )
+                    display_ans = " ".join(
+                        display_ans.split()
+                    ).strip()  # 余分な空白を掃除
+                else:
+                    # 数学以外はスラッシュで区切られた最初の正解のみを表示
+                    display_ans = to_pretty_display(
+                        str(ans_raw).split("/")[0].split("／")[0]
+                    ).strip()
 
                 if st.session_state.last_is_correct:
                     # 🟢 正解：ラベル15px / 答え20px（黒文字）
@@ -3482,27 +3446,57 @@ else:
                             st.rerun()
 
             else:
-                # 4択・2択など
-                # 🌟 追加：答え合わせの結果が表示されていない時だけ、以下の選択肢UIを出す
+                # ---------------------------------------------------------
+                # 💡 答え合わせ・選択肢生成エリア
+                # ---------------------------------------------------------
                 if not st.session_state.get("show_result"):
                     if not st.session_state.get("show_options"):
+                        st.markdown('<div class="lemon-box">', unsafe_allow_html=True)
                         if st.button(
                             "🤔 答えを表示する",
                             key=f"sh_f_{idx}",
                             use_container_width=True,
                         ):
-                            cv = clean_text(ans_raw.split("/")[0].split("／")[0])
-                            all_d = [
-                                clean_text(d)
-                                for d in re.split(r"[,、]", str(q.get("dummy", "")))
-                                if d.strip() and clean_text(d) != cv
-                            ]
+                            if is_kanji:
+                                st.session_state.mode = "kanji_canvas"
+                                st.session_state.current_question = q
+                                st.rerun()
+
+                            # 1. 🌟 数学用の見た目統一関数
+                            def unify_math_format(t):
+                                if not is_math:
+                                    return t
+                                # カンマ・読点をスペースに置き換え、余分な空白を詰める
+                                t = str(t).replace(",", " ").replace("、", " ")
+                                return " ".join(t.split())
+
+                            # 2. 正解(cv)の作成と統一
+                            if is_math:
+                                cv = unify_math_format(ans_raw)
+                            else:
+                                cv = clean_text(ans_raw.split("/")[0].split("／")[0])
+
+                            # 3. ダミー(all_d)の作成と統一
+                            d_text = str(q.get("dummy", ""))
+                            d_list = re.split(r"[,、]", d_text)
+
+                            if is_math:
+                                all_d = [
+                                    unify_math_format(d) for d in d_list if d.strip()
+                                ]
+                            else:
+                                all_d = [clean_text(d) for d in d_list if d.strip()]
+
+                            # 重複削除とシャッフル
+                            all_d = [d for d in all_d if d != cv]
                             raw_opts = [cv] + random.sample(all_d, min(len(all_d), 3))
                             st.session_state.current_opts = random.sample(
                                 raw_opts, len(raw_opts)
                             )
+
                             st.session_state.show_options = True
                             st.rerun()
+                        st.markdown("</div>", unsafe_allow_html=True)
                     else:
                         cols = st.columns(len(st.session_state.current_opts))
                         for j, word in enumerate(st.session_state.current_opts):
