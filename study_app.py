@@ -423,6 +423,11 @@ def inject_muscular_styles():
         .main div.stButton button p { font-size: 20px !important; font-weight: 900 !important; }
         .main div.stButton > button { min-height: 52px !important; width: 100% !important; }
         .stMarkdown h3 { font-size: 20px !important; font-weight: 800 !important; }
+
+        /* 🌟 指操作の感度向上：キャンバス内だけで作動 */
+        iframe[title="streamlit_drawable_canvas.st_canvas"] {
+            touch-action: none !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -3207,7 +3212,7 @@ else:
                             key=f"kj_cv_vFinal_{idx}_{i}_{r_key}",
                             display_toolbar=False,
                             background_color="#ffffff",
-                            update_streamlit=True,
+                            update_streamlit=False,
                             drawing_mode=d_mode,
                         )
 
