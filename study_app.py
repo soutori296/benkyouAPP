@@ -16,6 +16,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import unicodedata
 
+JST = timezone(timedelta(hours=+9))
 # 🌟 アプリ起動時に一回だけバケツを用意する（これより下で = [] と書かないこと！）
 if "today_wrong_cards" not in st.session_state:
     st.session_state.today_wrong_cards = []
@@ -117,69 +118,66 @@ def sync_timer_to_row2(added_seconds):
         return
 
     try:
-        from datetime import datetime
+        # 🌟 修正1: タイムゾーンを日本(JST)に固定
+        from datetime import datetime, timedelta, timezone
         import re
         import streamlit as st
-        import gspread  # get_creds()の中で使っているかもしれませんが、念のため
+        import gspread
 
-        # 1. Googleシートに接続
+        JST = timezone(timedelta(hours=+9))
+        today_str = datetime.now(JST).strftime("%Y/%m/%d")
+
         creds = get_creds()
         sh = gspread.authorize(creds).open("study_stats_db").worksheet("timer")
 
         # 2. 現在の2行目のデータを取得
         row_data = sh.row_values(2)
 
-        # 3. 数値を安全に読み取る補助関数
         def safe_int(val):
             if not val:
                 return 0
-            # 数字以外を除去（カンマなどが入っている場合対策）
-            num_str = re.sub(r"[^0-9]", "", str(val))
+            # カンマや小数点を除去して数値化
+            num_str = re.sub(r"[^0-9]", "", str(val).split(".")[0])
             return int(num_str) if num_str else 0
 
         # --- データの読み込み ---
         raw_sheet_date = str(row_data[0]) if len(row_data) > 0 else ""
         sheet_date = raw_sheet_date.replace("-", "/").strip()
+
+        # 🌟 修正2: 過去の「全累計」は日付が変わっても絶対に引き継ぐ
         current_today_total = safe_int(row_data[1]) if len(row_data) > 1 else 0
         current_total = safe_int(row_data[2]) if len(row_data) > 2 else 0
 
-        today_str = datetime.now().strftime("%Y/%m/%d")
-
-        # 4. 日付チェック：今日でない場合は「Today」だけ 0 にリセット
+        # 4. 日付チェック
         if sheet_date != "" and sheet_date != today_str:
-            print(f"🌅 日付変更を検知: {sheet_date} -> {today_str} (Todayをリセット)")
+            # 🌅 日付が変わった場合：今日の分だけ0からスタート
             current_today_total = 0
+            print(f"🌅 日付変更検知: {sheet_date} -> {today_str}")
 
-        # 5. 加算処理（ガードレールを通った後の added_seconds を使用）
+        # 5. 加算
         new_today_total = current_today_total + added_seconds
         new_total = current_total + added_seconds
 
-        # 🚀 6. Googleスプレッドシート A2:D2 を強制上書き
-        sh.update(
-            range_name="A2:D2",
-            values=[
-                [
-                    today_str,  # A: 日付
-                    int(new_today_total),  # B: 本日合計
-                    int(new_total),  # C: 全累計
-                    int(added_seconds),  # D: 今回加算分
-                ]
-            ],
-        )
+        # 🚀 6. 書き込み（リスト形式を確実に）
+        update_values = [
+            today_str,
+            int(new_today_total),
+            int(new_total),
+            int(added_seconds),
+        ]
 
-        # ✨ 7. アプリ内の表示用変数（箱）を最新の数字に更新
+        # update([values], range) の形式にするか、update_cellsを使う
+        sh.update(range_name="A2:D2", values=[update_values])
+
+        # ✨ 7. アプリ内変数を更新
         st.session_state.daily_seconds = new_today_total
         st.session_state.total_seconds = new_total
-
-        print(
-            f"✅ 同期完了: 今回={added_seconds}s, 本日={new_today_total}s, 累計={new_total}s"
-        )
 
         return new_today_total
 
     except Exception as e:
-        print(f"❌ Timer Error: {e}")
-        # エラー時は現在の値を保持して返す
+        # 🌟 修正3: エラー内容を画面に出してデバッグしやすくする
+        st.error(f"❌ Timer Sync Error: {e}")
         return st.session_state.get("daily_seconds", 0)
 
 
