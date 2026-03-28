@@ -2413,53 +2413,94 @@ if not st.session_state.mode:
                         else:
                             pool_B.append(q_item)
 
-                # --- 3. 抽出処理 ---
+                # --- 3. 抽出処理 (未実施優先・難易度バランス維持版) ---
                 if is_searching:
                     # 検索時は比率を無視して全件から最大30問
                     selection = pool_A + pool_B + pool_C
                 else:
-                    target_A, target_B, target_C = 15, 12, 3
-                    # ミス復習ロジック (省略せず維持)
+                    # 🌟 A. 各プールの「未実施(日付なし)」と「復習用」を仕分け
+                    # masteryデータから「実施済み」の問題文セットを作成
+                    done_q_texts = {
+                        str(m.get("q", "")).strip()
+                        for m in db.get("mastery", [])
+                        if str(m.get("最終実施日", "")).strip()
+                        or str(m.get("score", 0)) != "0"
+                    }
+
+                    def split_pool(pool):
+                        # 判定に使う問題文を正規化して比較
+                        unseen = [
+                            q
+                            for q in pool
+                            if str(q.get("q", "")).strip() not in done_q_texts
+                        ]
+                        review = [
+                            q
+                            for q in pool
+                            if str(q.get("q", "")).strip() in done_q_texts
+                        ]
+                        return unseen, review
+
+                    unseen_A, review_A = split_pool(pool_A)
+                    unseen_B, review_B = split_pool(pool_B)
+                    unseen_C, review_C = split_pool(pool_C)
+
+                    # 🌟 B. 目標配分(15:12:3)に従って「未実施」を上から順に取得
+                    # スライス[:n]を使うことで、スプレッドシートの登録順（上から順）を維持します
+                    sel_A = unseen_A[:15]
+                    sel_B = unseen_B[:12]
+                    sel_C = unseen_C[:3]
+
+                    # 🌟 C. 各ランクで「未実施」が足りない場合、そのランクの「復習用」から補充
+                    if len(sel_A) < 15:
+                        needed = 15 - len(sel_A)
+                        if review_A:
+                            sel_A.extend(
+                                random.sample(review_A, min(len(review_A), needed))
+                            )
+                    if len(sel_B) < 12:
+                        needed = 12 - len(sel_B)
+                        if review_B:
+                            sel_B.extend(
+                                random.sample(review_B, min(len(review_B), needed))
+                            )
+                    if len(sel_C) < 3:
+                        needed = 3 - len(sel_C)
+                        if review_C:
+                            sel_C.extend(
+                                random.sample(review_C, min(len(review_C), needed))
+                            )
+
+                    selection = sel_A + sel_B + sel_C
+
+                    # 🌟 D. ミス復習ロジック (本日間違えた問題を優先注入：最大5問)
                     mistake_pool = []
                     if st.session_state.get(
                         "today_mission_count", 0
                     ) >= 2 and st.session_state.get("today_mistakes"):
-                        for p in [pool_A, pool_B, pool_C]:
-                            for qi in p[:]:
-                                if (
-                                    str(qi.get("q", "")).strip()
-                                    in st.session_state.today_mistakes
-                                ):
-                                    mistake_pool.append(qi)
-                                    p.remove(qi)
-
-                    # 1. まずは各ランクから可能な限り抽出
-                    sel_A = random.sample(pool_A, min(len(pool_A), target_A))
-                    sel_B = random.sample(pool_B, min(len(pool_B), target_B))
-                    sel_C = random.sample(pool_C, min(len(pool_C), target_C))
-                    selection = sel_A + sel_B + sel_C
-
-                    # 🌟 2. 不足分を他のランクから補充（バランス調整）
-                    if len(selection) < 30:
-                        # まだ選ばれていない残りの全問題を一つにまとめる
-                        remaining_pool = [
-                            q for q in (pool_A + pool_B + pool_C) if q not in selection
+                        all_p = pool_A + pool_B + pool_C
+                        mistake_pool = [
+                            qi
+                            for qi in all_p
+                            if str(qi.get("q", "")).strip()
+                            in st.session_state.today_mistakes
                         ]
-                        needed = 30 - len(selection)
-                        # 残りがある分だけ補充する
-                        extra = random.sample(
-                            remaining_pool, min(len(remaining_pool), needed)
-                        )
-                        selection.extend(extra)
 
-                    # 3. ミス復習分の注入（既存ロジック）
                     if mistake_pool:
                         inject = random.sample(mistake_pool, min(len(mistake_pool), 5))
-                        # 注入分を考慮して全体のバランスを整える
+                        # 30問の枠を維持するため、現在のselectionの先頭から入れ替える
                         selection = inject + selection[: (30 - len(inject))]
 
-                random.shuffle(selection)
-                # 検索時は全件、通常時は最大30問で確定
+                    # 🌟 E. 最終的な不足補充 (万が一、全体で30問に満たない場合)
+                    if len(selection) < 30:
+                        remaining = [
+                            q for q in (pool_A + pool_B + pool_C) if q not in selection
+                        ]
+                        if remaining:
+                            needed = 30 - len(selection)
+                            selection.extend(
+                                random.sample(remaining, min(len(remaining), needed))
+                            )
                 final_selection = selection if is_searching else selection[:30]
 
                 if final_selection:
