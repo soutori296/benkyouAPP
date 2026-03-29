@@ -1904,55 +1904,6 @@ if not st.session_state.mode:
                     except Exception as e:
                         st.error(f"同期エラー: {e}")
 
-            with col_ad2:
-                st.markdown("**🔎 データ監査（英語・超精密）**")
-                if st.button(
-                    "超精密・整合性監査を実行", use_container_width=True, type="primary"
-                ):
-                    error_details = []
-                    for cat_name, q_list in all_q.items():
-                        if "英語" in cat_name:
-                            for q_ad in q_list:
-                                q_txt, ans_txt = (
-                                    str(q_ad.get("q", "")),
-                                    str(q_ad.get("a", "")),
-                                )
-                                m = re.search(r"[\(（](.*?)[\)）]", q_txt)
-                                if m and re.search(r"[/／]", m.group(1)):
-                                    opts = [
-                                        w.strip().lower().rstrip("?!.,")
-                                        for w in re.split(r"[/／]", m.group(1))
-                                        if w.strip()
-                                    ]
-                                    temp_ans, ans_words_found = (
-                                        ans_txt.lower().rstrip("?!.,"),
-                                        [],
-                                    )
-                                    sorted_opts = sorted(opts, key=len, reverse=True)
-                                    test_ans = temp_ans
-                                    for opt in sorted_opts:
-                                        if opt in test_ans:
-                                            ans_words_found.append(opt)
-                                            test_ans = test_ans.replace(opt, "", 1)
-                                    missing = [
-                                        o
-                                        for o in opts
-                                        if opts.count(o) > ans_words_found.count(o)
-                                    ]
-                                    if missing:
-                                        error_details.append(
-                                            f"❌ {q_txt[:25]}... \n ➡ 【不足: {set(missing)}】"
-                                        )
-
-                    if error_details:
-                        st.error(f"{len(error_details)}件の不備を発見しました。")
-                        for i, err in enumerate(error_details):
-                            st.code(f"No.{i} | {err}")
-                    else:
-                        st.success("すべての整合性が確認されました！")
-
-            st.divider()
-
             # --- 3. バックアップ ＆ データエクスポート ---
             st.markdown("#### 💾 データエクスポート")
             c_ex1, c_ex2 = st.columns(2)
