@@ -938,36 +938,34 @@ def get_skip_indices(text):
 
 
 def get_kanji_score(canvas_result, char, correct_strokes):
-    """
-    230サイズで判定を行います。
-    補助線なし、位置補正なしのストイックな記憶判定ロジックです。
-    """
-    if canvas_result is None or canvas_result.json_data is None:
-        return 0, "まずは一画書いてみよう！"
+    if canvas_result is None or canvas_result.image_data is None:
+        return 0, "入力待ち"
 
-    # 1. 画数チェック (±2画)
-    user_strokes = len(canvas_result.json_data["objects"])
+    # 1. 画数チェック
+    user_strokes = (
+        len(canvas_result.json_data["objects"]) if canvas_result.json_data else 0
+    )
     try:
         if correct_strokes and str(correct_strokes).strip().isdigit():
             target_s = int(float(correct_strokes))
-            if abs(user_strokes - target_s) > 2:
+            if abs(user_strokes - target_s) > 3:
                 return -1, f"画数が違います（現在 {user_strokes} 画）。"
     except Exception:
         pass
 
-    # 2. マスク準備 (230x230サイズ)
-    size = 230
+    # 2. ユーザー入力の抽出
     user_mask_raw = canvas_result.image_data[:, :, 3] > 0
+    h, w = user_mask_raw.shape
     if user_mask_raw.sum() == 0:
         return 0, "形をイメージしてから書いてみよう。"
 
-    # 230x230としてそのまま判定（位置のズレを許容しない）
-    user_mask = np.array(Image.fromarray(user_mask_raw).resize((size, size)))
+    # 3. お手本描画（ここで font を定義します）
+    target_img = Image.new("L", (w, h), 0)
+    draw = ImageDraw.Draw(target_img)
 
-    # 3. お手本描画
-    target_img = Image.new("L", (size, size), 0)
+    # 🌟 フォント読み込み処理（ここがエラーの箇所でした）
     font = None
-    # 230サイズに合わせてフォントサイズを 165 程度に調整
+    dynamic_font_size = int(h * 0.75)  # キャンバスサイズに合わせる
     fps = [
         os.path.join("fonts", "ipaexg.ttf"),
         "/usr/share/fonts/truetype/fonts-japanese-gothic.ttf",
@@ -976,35 +974,40 @@ def get_kanji_score(canvas_result, char, correct_strokes):
     for fp in fps:
         if os.path.exists(fp):
             try:
-                font = ImageFont.truetype(fp, 165)
+                font = ImageFont.truetype(fp, dynamic_font_size)
                 break
             except Exception:
                 continue
+
     if not font:
         font = ImageFont.load_default()
-    draw = ImageDraw.Draw(target_img)
-    draw.text((size // 2, size // 2), char, font=font, fill=255, anchor="mm")
+
+    # 座標の中央に描画
+    draw.text((w // 2, h // 2), char, font=font, fill=255, anchor="mm")
     target_mask = np.array(target_img) > 0
 
-    # 4. 一致度計算 (F-Score)
-    overlap = np.logical_and(target_mask, user_mask).sum()
+    # 4. 判定の「ゆとり」を作る（Scipyを使用）
+    # 🌟 pip install scipy が必要です
+    try:
+        from scipy.ndimage import binary_dilation
+
+        flexible_target = binary_dilation(target_mask, iterations=2)
+    except ImportError:
+        # scipyがない場合のバックアップ（厳密判定に戻る）
+        flexible_target = target_mask
+
+    # 5. なぞり率（Recall）で判定
+    overlap = np.logical_and(flexible_target, user_mask_raw).sum()
     recall = overlap / target_mask.sum() if target_mask.sum() > 0 else 0
-    precision = overlap / user_mask.sum() if user_mask.sum() > 0 else 0
-    f_score = (
-        (2 * recall * precision) / (recall + precision)
-        if (recall + precision) > 0
-        else 0
-    )
 
-    # 5. スコア決定（階段式 34/66/100）
-    if f_score > 0.65:
-        return 100, "バッチリ！完璧に思い出せましたね💮"
-    elif f_score > 0.35:
-        return 66, "だいたい合っています！一度クリアして書き直してみよう。"
-    elif f_score > 0.15:
-        return 34, "場所は捉えられています！次は形（パーツ）を思い出して。"
+    if recall > 0.75:
+        return 100, "合格！💮"
+    elif recall > 0.40:
+        return 66, "だいたい合っています"
+    elif recall > 0.15:
+        return 34, "形を意識してみて"
 
-    return 0, "位置がずれているかもしれません。お手本をよく見て思い出そう。"
+    return 0, "位置がずれているか、形が違います"
 
 
 # =============================================================================
@@ -3202,7 +3205,7 @@ else:
                             key=f"kj_cv_vFinal_{idx}_{i}_{r_key}",
                             display_toolbar=False,
                             background_color="#ffffff",
-                            update_streamlit=False,
+                            update_streamlit=True,
                             drawing_mode=d_mode,
                         )
 
